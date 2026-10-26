@@ -21,9 +21,10 @@ namespace UnityAR.EditorTools
             PlayerSettings.companyName = "AR Inspection Demo";
             PlayerSettings.productName = "园区巡检 AR";
 
-            // 允许在非编辑器环境下使用 http 明文流量，
-            // 否则真机上请求 http://192.168.x.x:8080 会被系统直接拦掉。
-            PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.example.unityar.inspect");
+            // 允许明文 HTTP：Android 9+ 默认禁止 http:// 明文流量，
+            // 真机直连开发机的 http://192.168.x.x:8080 必须打开这个开关，
+            // 否则会报 "CLEARTEXT communication to ... not permitted"。
+            PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
 
             AssetDatabase.SaveAssets();
             Debug.Log("[AR 巡检] 已配置 Android：minSdk 24 / ARM64 / 包名 com.example.unityar.inspect");

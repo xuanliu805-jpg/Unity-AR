@@ -16,8 +16,8 @@ namespace UnityAR.Ar
     ///   「点击检测到的平面，在命中位置放置一个简单标记」
     ///   「点击按钮或输入框时，不应误在 AR 场景中放置标记」
     ///
-    /// 后一条通过 PlacementGate（纯逻辑，已单元测试）+ EventSystem 的
-    /// IsPointerOverGameObject + 填写面板开关 三重保障实现。
+    /// 后一条通过 PlacementGate（纯逻辑，已单元测试）+ EventSystem 的当前帧射线命中
+    /// + 填写面板矩形 三重保障实现。
     /// </summary>
     [DisallowMultipleComponent]
     public class PlacementController : MonoBehaviour
@@ -51,7 +51,9 @@ namespace UnityAR.Ar
         public Vector3Position LastPosition { get; private set; }
 
         private readonly List<ARRaycastHit> hits = new List<ARRaycastHit>();
+        private readonly List<RaycastResult> uiHits = new List<RaycastResult>();
         private ITapSource tapSource;
+        private GameObject lastMarker;
 
         private void Awake()
         {
@@ -106,30 +108,33 @@ namespace UnityAR.Ar
             PlaceMarker(tap.ScreenPosition);
         }
 
-        /// <summary>判断这次点击是否落在界面控件上。</summary>
+        /// <summary>
+        /// 判断这次点击是否落在界面控件上。
+        ///
+        /// 这里刻意用 <see cref="EventSystem.RaycastAll"/> 而不是
+        /// <c>EventSystem.IsPointerOverGameObject</c>：后者读的是 EventSystem.Update 里
+        /// 缓存的上一帧命中状态，而本脚本的 Update 与 EventSystem.Update 的执行顺序是不确定的，
+        /// 于是点顶部状态栏这类 UI 时会「读到上一帧」而误判成不在 UI 上，进而误放标记。
+        /// RaycastAll 会当场重新射线一次，没有这一帧延迟。
+        /// </summary>
         private bool IsPointerOverUI(TapInfo tap)
         {
-            // 1) EventSystem 的命中判定：能覆盖按钮、输入框、下拉框。
             var eventSystem = EventSystem.current;
             if (eventSystem != null)
             {
-                if (tap.FingerId >= 0)
-                {
-                    if (eventSystem.IsPointerOverGameObject(tap.FingerId))
-                    {
-                        return true;
-                    }
-                }
-                else if (eventSystem.IsPointerOverGameObject())
+                var pointerData = new PointerEventData(eventSystem) { position = tap.ScreenPosition };
+                uiHits.Clear();
+                eventSystem.RaycastAll(pointerData, uiHits);
+                if (uiHits.Count > 0)
                 {
                     return true;
                 }
             }
 
-            // 2) 兜底：填写面板矩形内一律不放标记。
-            //    EventSystem 在某些 UI 模块配置下可能不更新触摸命中状态，
-            //    这里再用几何判定挡一次，保证「点输入框不会误放标记」。
-            if (uiBlocker != null)
+            // 兜底：填写面板矩形内一律不放标记。
+            // 注意 RectangleContainsScreenPoint 只做几何计算、不看对象是否 active，
+            // 面板收起时它依然占着屏幕下半部分，所以必须先确认它可见。
+            if (uiBlocker != null && uiBlocker.gameObject.activeInHierarchy)
             {
                 var canvas = uiBlocker.GetComponentInParent<Canvas>();
                 var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
@@ -168,12 +173,27 @@ namespace UnityAR.Ar
             var marker = CreateMarker();
             marker.transform.position = worldPosition;
             MarkerStyler.Apply(marker, defaultPriority);
+            lastMarker = marker;
 
             LastPosition = new Vector3Position(worldPosition.x, worldPosition.y, worldPosition.z);
             if (MarkerPlaced != null)
             {
                 MarkerPlaced(LastPosition);
             }
+        }
+
+        /// <summary>
+        /// 按新的优先级重新给最近放置的标记上色。
+        /// 巡检员选完优先级后调用，画面上就能立刻看出问题的严重程度。
+        /// </summary>
+        public void RestyleLastMarker(string priority)
+        {
+            if (lastMarker == null)
+            {
+                return;
+            }
+
+            MarkerStyler.Apply(lastMarker, priority);
         }
 
         /// <summary>生成标记对象。没配置 prefab 时用 Unity 内置立方体兜底（任务书允许基础几何体）。</summary>

@@ -72,7 +72,14 @@ namespace UnityAR.Input
     }
 #endif
 
-    /// <summary>旧输入系统（Input Manager）实现。</summary>
+    /// <summary>
+    /// 旧输入系统（Input Manager）实现。
+    ///
+    /// 注意：本文件位于 <c>namespace UnityAR.Input</c> 内，简单名 <c>Input</c> 会被 C# 解析成
+    /// 命名空间 <c>UnityAR.Input</c>，而不是 <c>UnityEngine.Input</c>，
+    /// 因此这里必须写全限定名，否则编译报错
+    /// （CS0234: 命名空间"UnityAR.Input"中不存在类型或命名空间名称"GetTouch"）。
+    /// </summary>
 #if ENABLE_LEGACY_INPUT_MANAGER
     public class LegacyInputTapSource : ITapSource
     {
@@ -80,9 +87,9 @@ namespace UnityAR.Input
         {
             tap = default(TapInfo);
 
-            if (Input.touchCount > 0)
+            if (UnityEngine.Input.touchCount > 0)
             {
-                var touch = Input.GetTouch(0);
+                var touch = UnityEngine.Input.GetTouch(0);
                 if (touch.phase == TouchPhase.Began)
                 {
                     tap = new TapInfo
@@ -97,12 +104,12 @@ namespace UnityAR.Input
                 return false;
             }
 
-            if (Input.GetMouseButtonDown(0))
+            if (UnityEngine.Input.GetMouseButtonDown(0))
             {
                 tap = new TapInfo
                 {
                     Began = true,
-                    ScreenPosition = Input.mousePosition,
+                    ScreenPosition = UnityEngine.Input.mousePosition,
                     FingerId = -1
                 };
                 return true;

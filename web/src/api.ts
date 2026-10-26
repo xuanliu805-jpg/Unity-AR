@@ -6,9 +6,10 @@
  *   PATCH  /api/issues/{id}/status    -> { issue: Issue }
  *   DELETE /api/issues/{id}           -> { deleted: "ISS-..." }
  *
- * 错误分两类：
+ * 错误分三类：
  *   - ApiError：后端正常返回但状态码非 2xx（body 内含 {error:{code,message,field}}）
  *   - NetworkError：fetch 本身失败（后端未启动 / 连接被拒 / 超时）
+ *   - CancelledError：调用方主动取消（组件卸载等），不应该当成「后端挂了」
  */
 
 import type {
@@ -50,11 +51,12 @@ class RequestTimeoutError extends Error {
 
 /** 后端返回的业务错误（HTTP 状态码非 2xx）。 */
 export class ApiError extends Error {
-  readonly code: ApiErrorCode;
+  /** 后端给出的错误码；后端新增错误码时这里也会如实透传。 */
+  readonly code: string;
   readonly field?: string;
   readonly status: number;
 
-  constructor(message: string, code: ApiErrorCode, status: number, field?: string) {
+  constructor(message: string, code: ApiErrorCode | string, status: number, field?: string) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
@@ -74,6 +76,14 @@ export class NetworkError extends Error {
   }
 }
 
+/** 请求被调用方主动取消。 */
+export class CancelledError extends Error {
+  constructor(message = '请求已取消') {
+    super(message);
+    this.name = 'CancelledError';
+  }
+}
+
 /** 读取环境变量中的后端地址（去掉结尾多余的斜杠）。 */
 export function getApiBaseUrl(): string {
   const raw =
@@ -84,7 +94,7 @@ export function getApiBaseUrl(): string {
 
 /** 把相对路径拼成完整 URL。 */
 export function apiUrl(path: string): string {
-  const normalized = path.startsWith('/') ? path : `/${path}`;
+  const normalized = path.startsWith('/') ? path : '/' + path;
   return `${getApiBaseUrl()}${normalized}`;
 }
 
@@ -100,6 +110,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const timeoutMs = getRequestTimeoutMs();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
 
   // 上游 signal（例如组件卸载时取消请求）也要能中止本次请求
   const upstream = init?.signal;
@@ -116,7 +127,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   // 真实浏览器里 fetch 一般会响应 abort，但某些代理/半开连接下不一定会 settle，
   // race 才是保证「一定会结束」的办法。
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new RequestTimeoutError(timeoutMs)), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      // 超时后必须中止底层请求，否则会积压一批永不返回的僵尸请求。
+      controller.abort();
+      reject(new RequestTimeoutError(timeoutMs));
+    }, timeoutMs);
   });
 
   let response: Response;
@@ -126,11 +142,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       timeoutPromise,
     ]);
   } catch (error) {
-    if (error instanceof RequestTimeoutError) {
+    if (error instanceof RequestTimeoutError || timedOut) {
       throw new NetworkError(
         `请求超时（${Math.round(timeoutMs / 1000)} 秒），后端可能未启动或网络不通`,
         error,
       );
+    }
+    if (isAbortError(error)) {
+      // 调用方主动取消，不该显示成「后端没启动」误导用户。
+      throw new CancelledError();
     }
     throw new NetworkError('无法连接后端服务，请确认后端已启动', error);
   } finally {
@@ -174,6 +194,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+/** 判断是不是「请求被中止」的错误。 */
+function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException) {
+    return error.name === 'AbortError';
+  }
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
+}
+
 /** GET /api/issues */
 export async function fetchIssues(signal?: AbortSignal): Promise<IssuesResponse> {
   const data = await request<Partial<IssuesResponse> & { issues?: Issue[] }>(
@@ -187,7 +219,7 @@ export async function fetchIssues(signal?: AbortSignal): Promise<IssuesResponse>
 
 /** PATCH /api/issues/{id}/status */
 export async function updateStatus(id: string, status: IssueStatus): Promise<Issue> {
-  const data = await request<UpdateStatusResponse>(
+  const data = await request<Partial<UpdateStatusResponse>>(
     apiUrl(`/api/issues/${encodeURIComponent(id)}/status`),
     {
       method: 'PATCH',
@@ -195,21 +227,32 @@ export async function updateStatus(id: string, status: IssueStatus): Promise<Iss
       body: JSON.stringify({ status }),
     },
   );
-  return data.issue;
+
+  // 运行时校验：request() 只是类型断言，不会真的检查后端返回了什么。
+  // 如果后端（或中间的代理）返回 200 但 body 不符合契约，这里必须挡住，
+  // 否则 undefined.id 会在渲染时抛错，把整个页面搞成白屏。
+  const issue = data.issue;
+  if (!issue || typeof issue.id !== 'string' || typeof issue.status !== 'string') {
+    throw new ApiError('后端返回的响应缺少 issue 字段', 'internal_error', 200);
+  }
+  return issue;
 }
 
 /** DELETE /api/issues/{id} */
 export async function deleteIssue(id: string): Promise<string> {
-  const data = await request<DeleteIssueResponse>(
+  const data = await request<Partial<DeleteIssueResponse>>(
     apiUrl(`/api/issues/${encodeURIComponent(id)}`),
     { method: 'DELETE' },
   );
+  if (typeof data.deleted !== 'string' || data.deleted.length === 0) {
+    throw new ApiError('后端返回的响应缺少 deleted 字段', 'internal_error', 200);
+  }
   return data.deleted;
 }
 
 /** 把任意异常转成给用户看的中文提示。 */
 export function toUserMessage(error: unknown): string {
-  if (error instanceof ApiError || error instanceof NetworkError) {
+  if (error instanceof ApiError || error instanceof NetworkError || error instanceof CancelledError) {
     return error.message;
   }
   if (error instanceof Error && error.message) {

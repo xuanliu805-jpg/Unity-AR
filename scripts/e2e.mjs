@@ -36,6 +36,7 @@ const DATA_FILE = join(repoRoot, 'server', 'data', 'e2e-issues.json');
 
 const children = [];
 let failures = 0;
+let backendDown = false; // 「后端不可用」阶段为 true，用来收窄控制台错误的豁免范围
 
 function log(msg) {
   console.log(`[e2e] ${msg}`);
@@ -67,7 +68,7 @@ async function waitForHttp(url, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
       if (res.ok) return true;
     } catch {
       // 还没起来，继续等
@@ -120,9 +121,6 @@ function stopAll() {
   }
 }
 
-// ---------------------------------------------------------------- 用例
-
-
 /**
  * 解析 playwright 的位置。
  * ESM 的 import() 不认 NODE_PATH，所以这里用 createRequire 在若干候选目录里找，
@@ -154,11 +152,16 @@ async function loadPlaywright() {
   return mod.chromium ? mod : mod.default;
 }
 
+// ---------------------------------------------------------------- 用例
+
 async function main() {
   mkdirSync(shotsDir, { recursive: true });
   if (existsSync(DATA_FILE)) rmSync(DATA_FILE);
 
-  log('1/6 编译 Go 后端');
+  await ensurePortFree(API_PORT, 'Go 后端');
+  await ensurePortFree(WEB_PORT, 'Vite');
+
+  log('1/7 编译 Go 后端');
   const goBin = process.env.GO_BIN || 'go';
   await new Promise((res, rej) => {
     const c = spawn(goBin, ['build', '-o', join(repoRoot, 'server', 'server.exe'), './cmd/server'], {
@@ -169,10 +172,7 @@ async function main() {
     c.on('exit', (code) => (code === 0 ? res() : rej(new Error(`go build 失败: ${code}`))));
   });
 
-  await ensurePortFree(API_PORT, 'Go 后端');
-  await ensurePortFree(WEB_PORT, 'Vite');
-
-  log('2/6 启动 Go 后端');
+  log('2/7 启动 Go 后端');
   let backend = startProcess('go', join(repoRoot, 'server', 'server.exe'), [
     '-addr', `:${API_PORT}`,
     '-data', DATA_FILE,
@@ -182,7 +182,7 @@ async function main() {
   }
   log(`   后端就绪：${API_BASE}`);
 
-  log('3/6 启动 Vite 开发服务器');
+  log('3/7 启动 Vite 开发服务器');
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   startProcess('vite', npx, ['vite', '--port', String(WEB_PORT), '--strictPort'], {
     cwd: webDir,
@@ -193,8 +193,41 @@ async function main() {
   }
   log(`   前端就绪：${WEB_BASE}`);
 
-  // --- 模拟 Unity 真机上报 ---
-  log('4/6 模拟 Unity 上报问题');
+  // ---- 后端接口契约（任务书 3.3 明确要求的错误处理）----
+  log('4/7 校验后端参数校验与错误契约');
+  const badPriority = await fetch(`${API_BASE}/api/issues`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 't', priority: 'urgent' }),
+  });
+  const badPriorityBody = await badPriority.json();
+  check('非法 priority 返回 400', badPriority.status === 400, String(badPriority.status));
+  check(
+    '错误响应结构符合契约 {error:{code,message,field}}',
+    badPriorityBody?.error?.code === 'invalid_argument' &&
+      typeof badPriorityBody?.error?.message === 'string' &&
+      badPriorityBody?.error?.field === 'priority',
+    JSON.stringify(badPriorityBody),
+  );
+
+  const emptyTitle = await fetch(`${API_BASE}/api/issues`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: '   ', priority: 'low' }),
+  });
+  const emptyTitleBody = await emptyTitle.json();
+  check('空标题返回 400', emptyTitle.status === 400, String(emptyTitle.status));
+  check('空标题的 field 是 title', emptyTitleBody?.error?.field === 'title', JSON.stringify(emptyTitleBody));
+
+  const badStatus = await fetch(`${API_BASE}/api/issues/ISS-does-not-exist/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'open' }),
+  });
+  check('未知问题 ID 返回 404', badStatus.status === 404, String(badStatus.status));
+
+  // ---- 模拟 Unity 真机上报 ----
+  log('5/7 模拟 Unity 上报问题');
   const reportRes = await fetch(`${API_BASE}/api/issues`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -210,8 +243,9 @@ async function main() {
   check('Unity 上报返回 201', reportRes.status === 201, `实际 ${reportRes.status}`);
   check('后端生成了问题 ID', Boolean(issueId), JSON.stringify(reportBody));
   check('默认状态为 open', reportBody?.issue?.status === 'open');
+  check('坐标原样保存', reportBody?.issue?.position?.x === 0.42 && reportBody?.issue?.position?.z === 1.26);
 
-  // --- React 页面 ---
+  // ---- React 页面 ----
   const { chromium } = await loadPlaywright();
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -220,25 +254,24 @@ async function main() {
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
     const text = m.text();
-    // 「后端不可用」阶段浏览器必然打印 net::ERR_CONNECTION_REFUSED / Failed to load resource，
-    // 这是本用例故意制造的场景，不算前端缺陷；这里只关心真正的 JS 报错。
-    if (/net::ERR_|Failed to load resource/i.test(text)) return;
+    // 只有「后端不可用」阶段才豁免网络层报错；其它阶段的资源加载错误仍然要算问题。
+    if (backendDown && /net::ERR_|Failed to load resource/i.test(text)) return;
     consoleErrors.push(text);
   });
   page.on('pageerror', (err) => pageErrors.push(String(err)));
 
-  log('5/6 打开 React 管理端并验证');
+  log('6/7 打开 React 管理端并验证');
   await page.goto(WEB_BASE, { waitUntil: 'networkidle' });
   await page.waitForSelector('table.issue-table', { timeout: 15000 });
 
-  const titleCell = page.locator('tbody tr').first().locator('.issue-title');
-  check('React 列表里看得到 Unity 上报的标题', (await titleCell.innerText()) === '入口墙面破损',
-    await titleCell.innerText());
+  const titleText = await page.locator('tbody tr').first().locator('.issue-title').innerText();
+  check('React 列表里看得到 Unity 上报的标题', titleText === '入口墙面破损', titleText);
   check('顶部显示问题总数 1', (await page.locator('[data-testid="total-count"]').innerText()) === '1');
   const bodyText = await page.locator('tbody').innerText();
   check('列表里显示了优先级「高」', bodyText.includes('高'));
-  check('列表里显示了状态「待处理」', bodyText.includes('待处理'));
-  check('列表里显示了位置坐标', bodyText.includes('0.42') || bodyText.includes('1.26'));
+  const initialStatus = await page.locator('tbody tr').first().locator('select').inputValue();
+  check('状态下拉框的当前值是 open（不是「文本里出现过 open」）', initialStatus === 'open', initialStatus);
+  check('列表里显示了位置坐标', bodyText.includes('0.42') && bodyText.includes('1.26'));
   await page.screenshot({ path: join(shotsDir, '01-列表显示Unity上报的问题.png'), fullPage: true });
 
   // 改状态
@@ -249,22 +282,24 @@ async function main() {
   check('React 改状态后后端真的变成 resolved',
     afterPatch.issues.some((i) => i.id === issueId && i.status === 'resolved'),
     JSON.stringify(afterPatch.issues.map((i) => [i.id, i.status])));
-  const rowText = await page.locator('tbody tr').first().innerText();
-  check('界面上的状态同步变成「已解决」', rowText.includes('已解决'), rowText);
+  const newStatus = await page.locator('tbody tr').first().locator('select').inputValue();
+  check('界面上的下拉框同步变成 resolved', newStatus === 'resolved', newStatus);
   await page.screenshot({ path: join(shotsDir, '02-React修改状态为已解决.png'), fullPage: true });
 
   // 后端不可用 → 不能白屏
-  log('6/6 停掉后端，验证页面不白屏');
+  log('7/7 停掉后端，验证页面不白屏');
+  backendDown = true;
   killTree(backend);
   await waitForExit(backend);
   await sleep(500);
+
   await page.locator('button:has-text("刷新")').click();
 
   // 后端被杀掉时，浏览器复用的 keep-alive 连接可能既不报错也不返回，
   // 前端靠请求超时（VITE_API_TIMEOUT_MS=2000）兜底，所以这里要等错误条出现而不是死等固定时长。
   const banner = page.locator('.error-banner').first();
   const bannerAppeared = await banner
-    .waitFor({ state: 'visible', timeout: 15000 })
+    .waitFor({ state: 'visible', timeout: 20000 })
     .then(() => true)
     .catch(() => false);
   const bannerText = bannerAppeared ? await banner.innerText() : '';
@@ -284,14 +319,21 @@ async function main() {
   if (!(await waitForHttp(`${API_BASE}/api/health`))) {
     throw new Error('Go 后端重启超时');
   }
+  backendDown = false;
   await page.locator('button:has-text("重试")').first().click();
   await page.waitForTimeout(1200);
 
   const titleAfterRestart = await page.locator('tbody tr').first().locator('.issue-title').innerText();
   check('Go 重启后数据仍然存在', titleAfterRestart === '入口墙面破损', titleAfterRestart);
-  const rowAfterRestart = await page.locator('tbody tr').first().innerText();
-  check('Go 重启后状态修改也保留（仍是已解决）', rowAfterRestart.includes('已解决'), rowAfterRestart);
+  const statusAfterRestart = await page.locator('tbody tr').first().locator('select').inputValue();
+  check('Go 重启后状态修改也保留（仍是 resolved）', statusAfterRestart === 'resolved', statusAfterRestart);
   await page.screenshot({ path: join(shotsDir, '04-重启后数据仍然存在.png'), fullPage: true });
+
+  // 删除接口（加分项，前端有删除按钮）
+  const del = await fetch(`${API_BASE}/api/issues/${encodeURIComponent(issueId)}`, { method: 'DELETE' });
+  check('DELETE 接口返回 200', del.status === 200, String(del.status));
+  const afterDelete = await (await fetch(`${API_BASE}/api/issues`)).json();
+  check('删除后列表里没有这条问题了', afterDelete.count === 0, JSON.stringify(afterDelete));
 
   check('浏览器控制台没有 JS 报错', consoleErrors.length === 0, consoleErrors.join(' | '));
   check('页面没有未捕获的异常', pageErrors.length === 0, pageErrors.join(' | '));

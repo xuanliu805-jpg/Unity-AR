@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,8 @@ type filePayload struct {
 // 文件不存在时视为空数据，不会报错，保证首次启动即可用。
 func NewFileStore(path string) (*Store, error) {
 	s := &Store{path: path, now: time.Now}
+	// 清理上次进程被强杀（kill -9 / 掉电）留下的临时文件，避免数据目录越积越脏。
+	cleanupStaleTempFiles(path)
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -61,6 +64,25 @@ func (s *Store) load() error {
 	}
 	s.issues = payload.Issues
 	return nil
+}
+
+// cleanupStaleTempFiles 删除数据文件同目录下残留的 issues-*.tmp。
+// 这些文件只在「进程被强杀」时才会留下（正常失败路径有 defer 清理）。
+func cleanupStaleTempFiles(path string) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "issues-") && strings.HasSuffix(name, ".tmp") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 // save 把当前内存数据原子地写回磁盘。调用方必须持有写锁。

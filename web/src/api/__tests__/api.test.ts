@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  CancelledError,
   DEFAULT_REQUEST_TIMEOUT_MS,
   getRequestTimeoutMs,
   DEFAULT_API_BASE_URL,
@@ -189,5 +190,62 @@ describe('请求超时', () => {
   it('可以通过环境变量调整超时时间', () => {
     import.meta.env.VITE_API_TIMEOUT_MS = '3000';
     expect(getRequestTimeoutMs()).toBe(3000);
+  });
+});
+describe('响应体契约校验', () => {
+  it('updateStatus 在后端返回 200 但缺少 issue 时抛出 ApiError，而不是把 undefined 传下去', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({})));
+    expect(await updateStatus('ISS-1', 'resolved').catch((e: unknown) => e)).toBeInstanceOf(ApiError);
+  });
+
+  it('updateStatus 在 issue 字段类型不对时抛出 ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ issue: { id: 42 } })));
+    expect(await updateStatus('ISS-1', 'resolved').catch((e: unknown) => e)).toBeInstanceOf(ApiError);
+  });
+
+  it('deleteIssue 在后端返回 200 但缺少 deleted 时抛出 ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({})));
+    expect(await deleteIssue('ISS-1').catch((e: unknown) => e)).toBeInstanceOf(ApiError);
+  });
+});
+
+describe('请求取消', () => {
+  it('上游 signal 被 abort 时抛出 CancelledError，而不是误报「后端没启动」', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        });
+      }),
+    );
+
+    const pending = fetchIssues(controller.signal).catch((e: unknown) => e);
+    controller.abort();
+    const error = await pending;
+
+    expect(error).toBeInstanceOf(CancelledError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+  });
+
+  it('超时会中止底层 fetch，不留下悬挂请求', async () => {
+    import.meta.env.VITE_API_TIMEOUT_MS = '50';
+    let capturedSignal: AbortSignal | null | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        capturedSignal = init?.signal ?? undefined;
+        return new Promise(() => {});
+      }),
+    );
+
+    await fetchIssues().catch(() => undefined);
+
+    expect(capturedSignal?.aborted).toBe(true);
   });
 });

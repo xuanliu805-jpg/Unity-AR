@@ -40,6 +40,14 @@ namespace UnityAR.UI
     {
         [SerializeField] private BackendSettings backendSettings;
 
+        private void Awake()
+        {
+            if (backendSettings == null)
+            {
+                backendSettings = FindObjectOfType<BackendSettings>();
+            }
+        }
+
         /// <summary>提交一条问题。回调在主线程执行。</summary>
         public IEnumerator SubmitIssue(IssueDraft draft, Action<ApiResult> onComplete)
         {

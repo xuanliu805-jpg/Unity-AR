@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -260,5 +261,103 @@ func TestUnknownRouteReturns404(t *testing.T) {
 	w := do(t, srv, http.MethodGet, "/api/nope", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestCreateIssueTooLongTitleReturns400(t *testing.T) {
+	srv := newTestServer(t)
+	long := strings.Repeat("测", 201)
+
+	w := do(t, srv, http.MethodPost, "/api/issues", `{"title":"`+long+`","priority":"low"}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d (%s), want 400", w.Code, w.Body.String())
+	}
+	body := decode(t, w)
+	errObj := body["error"].(map[string]any)
+	if errObj["field"] != "title" {
+		t.Fatalf("error.field = %v, want title", errObj["field"])
+	}
+}
+
+func TestCreateIssueTooLongDescriptionReturns400(t *testing.T) {
+	srv := newTestServer(t)
+	long := strings.Repeat("描", 2001)
+
+	w := do(t, srv, http.MethodPost, "/api/issues", `{"title":"t","description":"`+long+`","priority":"low"}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d (%s), want 400", w.Code, w.Body.String())
+	}
+	body := decode(t, w)
+	errObj := body["error"].(map[string]any)
+	if errObj["field"] != "description" {
+		t.Fatalf("error.field = %v, want description", errObj["field"])
+	}
+}
+
+func TestUnknownMethodOnKnownPathReturns405(t *testing.T) {
+	srv := newTestServer(t)
+
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		w := do(t, srv, method, "/api/issues", "")
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /api/issues: status = %d, want 405", method, w.Code)
+		}
+		body := decode(t, w)
+		errObj, ok := body["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: expected error object: %s", method, w.Body.String())
+		}
+		if errObj["code"] != "method_not_allowed" {
+			t.Fatalf("%s: error.code = %v, want method_not_allowed", method, errObj["code"])
+		}
+	}
+}
+
+// TestInternalErrorDoesNotLeakServerPaths 验证服务端内部错误（这里用「数据文件被目录占位」模拟写盘失败）
+// 不会把部署路径、盘符、操作系统错误原文回给客户端。细节只应出现在服务端日志里。
+func TestInternalErrorDoesNotLeakServerPaths(t *testing.T) {
+	dir := t.TempDir()
+	dataPath := filepath.Join(dir, "sub", "issues.json")
+	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(dataPath, []byte(`{"issues":[]}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := store.NewFileStore(dataPath)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	// 把数据文件换成一个同名的目录：之后的 Rename 覆盖会失败，从而触发 500 分支。
+	if err := os.Remove(dataPath); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := os.Mkdir(dataPath, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	srv := New(st)
+	w := do(t, srv, http.MethodPost, "/api/issues", `{"title":"t","priority":"low"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%s), want 500", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	for _, leak := range []string{dir, "issues.json", "rename", "Access is denied", "os."} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("500 响应泄露了内部信息 %q: %s", leak, body)
+		}
+	}
+
+	errObj := decode(t, w)["error"].(map[string]any)
+	if errObj["code"] != "internal_error" {
+		t.Fatalf("error.code = %v, want internal_error", errObj["code"])
+	}
+	if msg, _ := errObj["message"].(string); msg == "" {
+		t.Fatal("expected non-empty error message")
 	}
 }

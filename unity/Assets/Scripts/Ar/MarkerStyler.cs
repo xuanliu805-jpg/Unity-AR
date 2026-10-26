@@ -4,7 +4,7 @@ using UnityAR.Core;
 namespace UnityAR.Ar
 {
     /// <summary>
-    /// 标记外观控制：按优先级给标记上色，让管理人员一眼能从画面里分辨问题严重程度。
+    /// 标记外观控制：按优先级给标记上色，让管理人员一眼就能从画面里分辨问题严重程度。
     /// </summary>
     public static class MarkerStyler
     {
@@ -26,7 +26,12 @@ namespace UnityAR.Ar
             }
         }
 
-        /// <summary>把颜色应用到标记上（含子渲染器）。</summary>
+        /// <summary>
+        /// 把颜色应用到标记上。
+        ///
+        /// 用 MaterialPropertyBlock 而不是 <c>renderer.material</c>：
+        /// 后者每访问一次都会给渲染器实例化一份材质，标记一多就是材质泄漏 + DrawCall 增加。
+        /// </summary>
         public static void Apply(GameObject marker, string priority)
         {
             if (marker == null)
@@ -34,12 +39,19 @@ namespace UnityAR.Ar
                 return;
             }
 
-            var color = ColorFor(priority);
             var renderer = marker.GetComponent<Renderer>();
-            if (renderer != null && renderer.material != null)
+            if (renderer == null)
             {
-                renderer.material.color = color;
+                return;
             }
+
+            var color = ColorFor(priority);
+            var block = new MaterialPropertyBlock();
+            renderer.GetPropertyBlock(block);
+            // URP 用 _BaseColor，内置管线用 _Color，两个都设一遍最保险。
+            block.SetColor("_BaseColor", color);
+            block.SetColor("_Color", color);
+            renderer.SetPropertyBlock(block);
         }
     }
 }

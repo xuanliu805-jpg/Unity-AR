@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace UnityAR.Core
 {
@@ -39,7 +40,7 @@ namespace UnityAR.Core
 
         public override string ToString()
         {
-            return string.Format("({0:0.###}, {1:0.###}, {2:0.###})", X, Y, Z);
+            return string.Format(CultureInfo.InvariantCulture, "({0:0.###}, {1:0.###}, {2:0.###})", X, Y, Z);
         }
     }
 }

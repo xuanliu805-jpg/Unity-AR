@@ -296,3 +296,33 @@ body {
 .issue-row--skeleton td {
   color: var(--accent);
 }
+/* ---------- 顶层错误边界 ---------- */
+.error-boundary {
+  margin: 48px auto;
+  max-width: 520px;
+  padding: 32px;
+  border-radius: 12px;
+  background: #1b1b21;
+  border: 1px solid #ff6b6b;
+  color: #f5f5f7;
+  text-align: center;
+}
+
+.error-boundary__title {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+.error-boundary__message {
+  margin: 0 0 24px;
+  color: #b9b9c2;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+/* ---------- 禁用态 ---------- */
+.button:disabled,
+.status-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    语法检查工具。
+    背景：Unity 工程依赖 UnityEngine / AR Foundation 的程序集，本机没有 Unity 编辑器，
+    无法真正编译。但「括号没配对、少一个分号」这类**语法**错误是可以在没有 Unity 的
+    环境下用 Roslyn 的语法分析器查出来的 —— 语法错误和类型解析是两回事。
+    这个工具只报语法诊断（S* 开头的诊断 ID），不做语义检查。
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SyntaxCheck</RootNamespace>
+    <AssemblyName>SyntaxCheck</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+  </ItemGroup>
+
+</Project>

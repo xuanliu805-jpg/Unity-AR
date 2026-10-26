@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchIssues, toUserMessage } from './api';
 import ErrorBanner from './components/ErrorBanner';
 import IssueList from './components/IssueList';
@@ -16,18 +16,31 @@ export default function App() {
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
+  // 请求序号：并发刷新时只有最后一次的结果才允许写进 state。
+  // 否则「先发后到」的旧响应会覆盖新响应，界面显示过期数据。
+  const loadSeq = useRef(0);
+
   const loadIssues = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setLoadError(null);
     try {
       const data = await fetchIssues();
+      if (seq !== loadSeq.current) {
+        return; // 已经有更新的请求在飞，丢弃这次过期的响应
+      }
       setIssues(data.issues);
       setTotal(data.count);
     } catch (error) {
+      if (seq !== loadSeq.current) {
+        return;
+      }
       // 后端不可用：显示错误条，页面其余部分照常渲染，不白屏
       setLoadError(toUserMessage(error));
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -125,6 +138,7 @@ export default function App() {
       <IssueList
         issues={visibleIssues}
         loading={loading}
+        loadFailed={Boolean(loadError)}
         onIssueUpdated={handleIssueUpdated}
         onIssueDeleted={handleIssueDeleted}
       />

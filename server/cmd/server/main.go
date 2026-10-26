@@ -36,6 +36,9 @@ func main() {
 		Addr:              *addr,
 		Handler:           logging(api.New(st)),
 		ReadHeaderTimeout: 10 * time.Second,
+		// 慢速客户端不能长期占用连接
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {

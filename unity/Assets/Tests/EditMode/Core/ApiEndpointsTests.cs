@@ -78,9 +78,9 @@ namespace UnityAR.Tests.EditMode
         [Test]
         public void 真机局域网地址可以正常拼接()
         {
-            var url = BackendConfig.BuildUrl("192.168.1.20:8080", ApiEndpoints.IssueStatus("ISS-1"));
+            var url = BackendConfig.BuildUrl("http://192.168.1.20:8080", ApiEndpoints.IssueStatus("ISS-1"));
 
-            Assert.That(url, Is.EqualTo("192.168.1.20:8080/api/issues/ISS-1/status"));
+            Assert.That(url, Is.EqualTo("http://192.168.1.20:8080/api/issues/ISS-1/status"));
         }
     }
 }

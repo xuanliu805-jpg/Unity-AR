@@ -30,8 +30,8 @@ namespace UnityAR.Ar
         /// <summary>当前是否存在可以放置标记的水平平面。</summary>
         public bool HasHorizontalPlane { get; private set; }
 
-        /// <summary>当前状态的中文提示。</summary>
-        public string StatusText { get; private set; }
+        /// <summary>当前状态的中文提示。初始就有值，避免 UI 在 OnEnable 早期拿到 null。</summary>
+        public string StatusText { get; private set; } = "AR 尚未启动";
 
         /// <summary>AR 会话状态原文，便于排查问题。</summary>
         public string RawState { get; private set; }
@@ -45,6 +45,9 @@ namespace UnityAR.Ar
         {
             get { return planeManager; }
         }
+
+                /// <summary>上一次统计到的水平平面数量，用来判断数量是否真的变了。</summary>
+        private int lastPlaneCount = -1;
 
         private void Awake()
         {
@@ -109,19 +112,21 @@ namespace UnityAR.Ar
         public void RefreshPlaneCount()
         {
             var count = CountHorizontalPlanes();
-            if (count == (HasHorizontalPlane ? 1 : 0) && count == 0)
+
+            // 数量真的变了才通知。
+            // 之前只在「0 ↔ 非 0」翻转时通知，1 → 3 这种变化会被吞掉，
+            // 状态栏上的「检测到 N 个水平平面」会长期停留在旧值。
+            if (count == lastPlaneCount)
             {
                 return;
             }
 
-            var previous = HasHorizontalPlane;
+            lastPlaneCount = count;
             HasHorizontalPlane = count > 0;
-            if (previous != HasHorizontalPlane)
+
+            if (HorizontalPlaneCountChanged != null)
             {
-                if (HorizontalPlaneCountChanged != null)
-                {
-                    HorizontalPlaneCountChanged(count);
-                }
+                HorizontalPlaneCountChanged(count);
             }
         }
 

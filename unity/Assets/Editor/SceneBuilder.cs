@@ -230,7 +230,9 @@ namespace UnityAR.EditorTools
             var image = root.GetComponent<Image>();
             image.color = new Color(0.18f, 0.18f, 0.21f);
 
-            var viewport = new GameObject("TextViewport", typeof(RectTransform));
+            // TMP 3.0.6 的 TMP_InputField 只有 textViewport，没有旧版 UI 的 viewport；
+            // textViewport 上还必须挂 RectMask2D，否则超出输入框的文字不会被裁剪。
+            var viewport = new GameObject("TextViewport", typeof(RectTransform), typeof(RectMask2D));
             viewport.transform.SetParent(root.transform, false);
             var viewportRect = viewport.GetComponent<RectTransform>();
             SetAnchors(viewportRect, Vector2.zero, Vector2.one, new Vector2(8f, 4f), new Vector2(-8f, -4f));
@@ -253,7 +255,7 @@ namespace UnityAR.EditorTools
             SetAnchors(placeholder.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
 
             var input = root.GetComponent<TMP_InputField>();
-            input.viewport = viewportRect;
+            input.textViewport = viewportRect;
             input.textComponent = textComponent;
             input.placeholder = placeholder;
             input.lineType = TMP_InputField.LineType.SingleLine;

@@ -35,8 +35,13 @@ namespace UnityAR.UI
         [SerializeField] private TMP_Text feedbackText;
         [SerializeField] private TMP_Text positionText;
 
-        private Coroutine submitRoutine;
+                private Coroutine submitRoutine;
         private string selectedPriority = IssuePriorities.Medium;
+
+        // 保存每个优先级按钮的委托，OnDestroy 时用 RemoveListener 精确移除，
+        // 不��� RemoveAllListeners（那会把 Inspector 里手工挂的监听也一起清掉）。
+        private readonly System.Collections.Generic.List<UnityEngine.Events.UnityAction> priorityHandlers =
+            new System.Collections.Generic.List<UnityEngine.Events.UnityAction>();
 
         /// <summary>当前面板是否打开。</summary>
         public bool IsFormOpen { get; private set; }
@@ -85,10 +90,14 @@ namespace UnityAR.UI
                 for (var i = 0; i < priorityButtons.Length; i++)
                 {
                     var index = i;
-                    if (priorityButtons[i] != null)
+                    if (priorityButtons[i] == null)
                     {
-                        priorityButtons[i].onClick.AddListener(() => OnPriorityButtonClicked(index));
+                        continue;
                     }
+
+                    UnityEngine.Events.UnityAction handler = () => OnPriorityButtonClicked(index);
+                    priorityHandlers.Add(handler);
+                    priorityButtons[i].onClick.AddListener(handler);
                 }
             }
 
@@ -114,13 +123,15 @@ namespace UnityAR.UI
 
             if (priorityButtons != null)
             {
-                for (var i = 0; i < priorityButtons.Length; i++)
+                for (var i = 0; i < priorityButtons.Length && i < priorityHandlers.Count; i++)
                 {
                     if (priorityButtons[i] != null)
                     {
-                        priorityButtons[i].onClick.RemoveAllListeners();
+                        priorityButtons[i].onClick.RemoveListener(priorityHandlers[i]);
                     }
                 }
+
+                priorityHandlers.Clear();
             }
 
             if (placement != null)
@@ -156,6 +167,12 @@ namespace UnityAR.UI
 
             selectedPriority = IssuePriorities.All[index];
             RefreshPriorityButtons();
+
+            // 让画面里的标记颜色跟着优先级走（加分项：按优先级改变 AR 标记样式）。
+            if (placement != null)
+            {
+                placement.RestyleLastMarker(selectedPriority);
+            }
         }
 
         /// <summary>刷新优先级按钮的选中态。</summary>
@@ -222,6 +239,12 @@ namespace UnityAR.UI
                 return;
             }
 
+            if (apiClient == null)
+            {
+                ShowFeedback("无法提交：ApiClient 没有配置", true);
+                return;
+            }
+
             var draft = BuildDraft();
             var validation = IssueValidator.Validate(draft);
             if (!validation.IsValid)
@@ -241,43 +264,50 @@ namespace UnityAR.UI
 
         private IEnumerator Submit(IssueDraft draft)
         {
-            var done = false;
-            var result = new ApiResult();
-
-            yield return apiClient.SubmitIssue(draft, r =>
+            try
             {
-                result = r;
-                done = true;
-            });
+                var done = false;
+                var result = new ApiResult();
 
-            // SubmitIssue 内部已经 yield 过，这里等回调被触发即可。
-            while (!done)
-            {
-                yield return null;
-            }
-
-            submitRoutine = null;
-            if (submitButton != null)
-            {
-                submitButton.interactable = true;
-            }
-
-            if (result.Success)
-            {
-                ShowFeedback(result.Message, false);
-                if (titleInput != null)
+                yield return apiClient.SubmitIssue(draft, r =>
                 {
-                    titleInput.text = string.Empty;
+                    result = r;
+                    done = true;
+                });
+
+                // SubmitIssue 内部已经 yield 过，这里等回调被触发即可。
+                while (!done)
+                {
+                    yield return null;
                 }
 
-                if (descriptionInput != null)
+                if (result.Success)
                 {
-                    descriptionInput.text = string.Empty;
+                    ShowFeedback(result.Message, false);
+                    if (titleInput != null)
+                    {
+                        titleInput.text = string.Empty;
+                    }
+
+                    if (descriptionInput != null)
+                    {
+                        descriptionInput.text = string.Empty;
+                    }
+                }
+                else
+                {
+                    ShowFeedback("提交失败：" + result.Message, true);
                 }
             }
-            else
+            finally
             {
-                ShowFeedback("提交失败：" + result.Message, true);
+                // 无论成功失败、哪怕协程里抛了异常，都要把按钮恢复可点，
+                // 否则一次失败就会让「提交问题」按钮永久失效。
+                submitRoutine = null;
+                if (submitButton != null)
+                {
+                    submitButton.interactable = true;
+                }
             }
         }
 

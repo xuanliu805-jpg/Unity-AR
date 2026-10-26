@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Issue, IssueStatus } from '../types';
 import { STATUS_LABELS, STATUS_OPTIONS } from '../types';
 
@@ -8,26 +8,43 @@ export interface IssueRowProps {
   onUpdateStatus: (id: string, status: IssueStatus) => Promise<void>;
   onDelete: (id: string) => void;
   formatTime: (iso: string) => string;
+  /** 删除请求进行中：禁用删除按钮，避免重复提交。 */
+  deleting?: boolean;
 }
 
-export default function IssueRow({ issue, onUpdateStatus, onDelete, formatTime }: IssueRowProps) {
+export default function IssueRow({
+  issue,
+  onUpdateStatus,
+  onDelete,
+  formatTime,
+  deleting = false,
+}: IssueRowProps) {
   const [status, setStatus] = useState<IssueStatus>(issue.status);
   const [busy, setBusy] = useState(false);
 
+  // 保存「最近一次已知的服务端状态」。
+  // 失败回滚要用它，而不是渲染闭包里的旧值：
+  // 请求期间父组件可能刷新了列表并带来新的 issue.status，
+  // 用陈旧的 previous 回滚会把新状态覆盖掉。
+  const serverStatus = useRef<IssueStatus>(issue.status);
+
   // 服务端状态变化（例如刷新后）同步回下拉框
   useEffect(() => {
+    serverStatus.current = issue.status;
     setStatus(issue.status);
   }, [issue.status]);
 
   const handleChange = async (next: IssueStatus) => {
-    const previous = status;
+    const previous = serverStatus.current;
     setStatus(next);
     setBusy(true);
     try {
       await onUpdateStatus(issue.id, next);
-    } catch {
-      // 失败：回滚到原来的值
+      serverStatus.current = next;
+    } catch (error) {
+      // 失败：回滚到最后一次已知的服务端状态
       setStatus(previous);
+      console.error('更新问题状态失败:', error);
     } finally {
       setBusy(false);
     }
@@ -75,9 +92,10 @@ export default function IssueRow({ issue, onUpdateStatus, onDelete, formatTime }
           type="button"
           className="button button--danger"
           aria-label={`删除 ${issue.title}`}
+          disabled={deleting}
           onClick={() => onDelete(issue.id)}
         >
-          删除
+          {deleting ? '删除中…' : '删除'}
         </button>
       </td>
     </tr>

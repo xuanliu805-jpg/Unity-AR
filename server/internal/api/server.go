@@ -17,10 +17,21 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/model"
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/store"
+)
+
+// 请求体大小上限（1 MB）。超过时返回 413，而不是静默截断。
+const maxBodyBytes = 1 << 20
+
+// 字段长度上限。服务端也做限制，避免有人把整本书粘进标题。
+const (
+	maxTitleLength       = 200
+	maxDescriptionLength = 2000
 )
 
 // Server 是 HTTP 处理器。
@@ -119,13 +130,33 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var req createIssueRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "请求体不是合法的 JSON: "+err.Error(), "")
+		if errors.Is(err, errBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_argument",
+				"请求体过大，请检查提交的内容", "")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "请求体不是合法的 JSON", "")
 		return
 	}
 
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		writeError(w, http.StatusBadRequest, "invalid_argument", "标题(title)不能为空", "title")
+		return
+	}
+
+	// 按「字符数」而不是字节数计算，和 Unity 客户端的口径保持一致：
+	// 否则一个 100 字的中文标题（UTF-8 300 字节）会客户端放行、后端 400。
+	if utf8.RuneCountInString(title) > maxTitleLength {
+		writeError(w, http.StatusBadRequest, "invalid_argument",
+			"标题(title)不能超过 "+strconv.Itoa(maxTitleLength)+" 个字符", "title")
+		return
+	}
+
+	description := strings.TrimSpace(req.Description)
+	if utf8.RuneCountInString(description) > maxDescriptionLength {
+		writeError(w, http.StatusBadRequest, "invalid_argument",
+			"描述(description)不能超过 "+strconv.Itoa(maxDescriptionLength)+" 个字符", "description")
 		return
 	}
 
@@ -147,13 +178,13 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue, err := s.store.Create(model.Issue{
 		Title:       title,
-		Description: strings.TrimSpace(req.Description),
+		Description: description,
 		Priority:    priority,
 		Position:    pos,
 	})
 	if err != nil {
 		log.Printf("保存问题失败: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "保存问题失败: "+err.Error(), "")
+		writeError(w, http.StatusInternalServerError, "internal_error", "保存问题失败，请稍后重试", "")
 		return
 	}
 
@@ -169,7 +200,12 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 
 	var req updateStatusRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "请求体不是合法的 JSON: "+err.Error(), "")
+		if errors.Is(err, errBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_argument",
+				"请求体过大，请检查提交的内容", "")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "请求体不是合法的 JSON", "")
 		return
 	}
 
@@ -187,7 +223,7 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("更新状态失败: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "更新状态失败: "+err.Error(), "")
+		writeError(w, http.StatusInternalServerError, "internal_error", "更新状态失败，请稍后重试", "")
 		return
 	}
 
@@ -202,22 +238,56 @@ func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("删除问题失败: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "删除问题失败: "+err.Error(), "")
+		writeError(w, http.StatusInternalServerError, "internal_error", "删除问题失败，请稍后重试", "")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
+	// 路径存在、只是方法不对时返回 405，比笼统的 404「未知接口」更准确。
+	if isKnownPath(r.URL.Path) {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			r.Method+" 方法不支持: "+r.URL.Path, "")
+		return
+	}
 	writeError(w, http.StatusNotFound, "not_found", "未知接口: "+r.URL.Path, "")
+}
+
+// isKnownPath 判断路径是否是本服务提供的接口（不考虑方法）。
+func isKnownPath(path string) bool {
+	switch path {
+	case "/api/health", "/api/issues":
+		return true
+	}
+	if !strings.HasPrefix(path, "/api/issues/") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "/api/issues/")
+	if rest == "" {
+		return false
+	}
+	// /api/issues/{id} 或 /api/issues/{id}/status
+	if strings.HasSuffix(rest, "/status") {
+		rest = strings.TrimSuffix(rest, "/status")
+	}
+	return rest != "" && !strings.Contains(rest, "/")
 }
 
 // ---------- 辅助函数 ----------
 
+// errBodyTooLarge 表示请求体超过了 maxBodyBytes。
+var errBodyTooLarge = errors.New("请求体过大")
+
 func decodeJSON(r *http.Request, dst any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// 多读 1 个字节用于判断是否超限：直接用 LimitReader 截断会把超大 body
+	// 变成一段非法 JSON，报「invalid_json」，掩盖了真正的原因。
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxBodyBytes {
+		return errBodyTooLarge
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
 		return errors.New("请求体为空")

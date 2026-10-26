@@ -493,3 +493,116 @@ Step 2 里 AI 助手因为本机没有 Go，用一个 mock 后端做的前端联
 
 ### 4.7 提交
 - 提交信息：`test(e2e): 增加三端联调冒烟脚本，并修复请求挂死导致页面无提示的问题`
+
+---
+
+## Step 5 — 代码评审、缺陷修复与文档交付
+
+**目标**：在交付前做一轮独立评审，把能自动化的缺陷全部修掉，并补齐 README / AI_LOG / 测试报告。
+
+### 5.1 做了什么
+
+1. **发起两次独立代码评审**（AI sub-agent，只读审查，不允许改文件）：
+   - P-003：Unity C# / AR Foundation 代码审查（Prompt 原文见 `AI_LOG.md`）；
+   - P-004：Go 后端 + React 前端 + E2E 脚本审查（Prompt 原文见 `AI_LOG.md`）。
+2. **逐条复核并分类处理**：每一条「重要 / 阻塞」结论我都先写**失败用例**再改实现，
+   驳回的建议在 `AI_LOG.md` 里逐条写明理由。
+3. **补齐文档**：`README.md`、`AI_LOG.md`、`docs/TEST_REPORT.md`，并更新本文件。
+
+### 5.2 评审发现并修复的问题（重点）
+
+#### A. 两个会让 Unity 工程**编译不过**的问题（阻塞级）
+
+| 问题 | 原因 | 修法 |
+| --- | --- | --- |
+| `Assets/Scripts/Input/TapSource.cs` 旧输入分支 | 文件在 `namespace UnityAR.Input` 内，简单名 `Input` 被 C# 解析成**命名空间** `UnityAR.Input` 而不是 `UnityEngine.Input`，报 `CS0234: 命名空间"UnityAR.Input"中不存在类型或命名空间名称"GetTouch"`。**因为仓库里没有 `ProjectSettings.asset`，Unity 重建时 `activeInputHandler` 默认是 Old，也就是说默认配置下打开工程正好命中这个坏分支** | 全部改成全限定 `UnityEngine.Input.GetTouch` / `GetMouseButtonDown` / `mousePosition` |
+| `Assets/Editor/SceneBuilder.cs` 的 TMP 输入框 | TMP 3.0.6 的 `TMP_InputField` 只有 `textViewport`（序列化字段也只有 `m_TextViewport`），**没有** `viewport` → `CS1061`，`UnityAR.Editor` 程序集编译失败、场景根本生成不出来 | 改为 `input.textViewport = viewportRect;`，并给 TextViewport 补 `RectMask2D`（TMP 3.0.6 的 `m_TextViewportRectMask` 正是从它身上取的） |
+
+> 对这两条我**没有只凭 AI 的话改代码**：单独下载了 `com.unity.textmeshpro@3.0.6` 的源码包，
+> 核对到 `TMP_InputField.cs:618` 明确写着
+> `public RectTransform textViewport { get { return m_TextViewport; } set { ... } }`，确认 AI 结论正确后才动手。
+
+#### B. 「点按钮会误放标记」这条需求的两处真实漏洞（重要级）
+
+| 问题 | 原因 | 修法 |
+| --- | --- | --- |
+| 顶部状态栏仍会误放标记 | `EventSystem.IsPointerOverGameObject` 读的是 `EventSystem.Update` 里缓存的**上一帧**命中状态，而 `PlacementController.Update` 与 `EventSystem.Update` 的执行顺序不确定 → 点 UI 时判定成「不在 UI 上」 | 改用 `EventSystem.RaycastAll` 做**当前帧**射线命中 |
+| 屏幕下方约 40% 永远放不了标记 | `uiBlocker` 绑的是填写面板，`RectangleContainsScreenPoint` 只做几何计算、**不看对象是否 active**，面板收起后它依然占着屏幕下半部分 | 加上 `uiBlocker.gameObject.activeInHierarchy` 判断 |
+
+#### C. 后端：500 响应泄露服务器路径（重要级）
+
+红灯复现（`TestInternalErrorDoesNotLeakServerPaths`，用「把数据文件换成同名目录」制造写盘失败）：
+
+```
+{"error":{"code":"internal_error","message":"保存问题失败: 替换数据文件失败: rename E:\\...\\sub\\issues.json: Access is denied."}}
+```
+
+→ 细节只进服务端日志，客户端拿固定文案「保存问题失败，请稍后重试」。
+
+#### D. 前端：可能白屏 / 永久 loading / 竞态（重要级）
+
+| 问题 | 修法 |
+| --- | --- |
+| 后端返回 200 但 body 缺 `issue` → `undefined.id` 抛错 → React 卸载整棵树 → **白屏** | `updateStatus` / `deleteIssue` 加运行时校验；顶层加 `ErrorBoundary` 兜底 |
+| 上游 signal 被 abort 被误报成「后端没启动」 | 新增 `CancelledError`，与 `NetworkError` 区分 |
+| 超时后底层 fetch 没被中止，积压僵尸请求 | 超时回调里先 `controller.abort()` |
+| 连续刷新时旧响应覆盖新响应 | 加请求序号，过期响应丢弃 |
+| 删除没有并发保护，双击会发两个 DELETE | `deletingIds` 集合，删除中按钮禁用 |
+| 加载失败时表格显示「暂无问题」，误导成「真的没数据」 | 改为「数据加载失败，请点击右上角「刷新」重试」 |
+
+#### E. E2E 脚本里的**假阳性断言**（重要级）
+
+原来三条断言是 `rowText.includes('待处理')` / `includes('已解决')` ——
+但状态下拉框渲染了全部 3 个 `<option>`，这两个词**无论当前状态是什么都会出现在行文本里**，断言永远不会失败。
+已改成断言 `select.inputValue()`（这才是真正验证「界面同步」的方式）。
+
+#### F. 其它已修的中小问题
+
+- 后端：方法不匹配返回 405（`method_not_allowed`）而不是笼统的 404；超大 body 返回 413 而不是被静默截断成 `invalid_json`；
+  标题/描述长度上限 200/2000 **字符**（改成 `utf8.RuneCountInString`，与 Unity 客户端口径一致 —— 原来客户端按字符、后端按字节，
+  一个 100 字的中文标题会「客户端放行、后端 400」）；补 `WriteTimeout` / `IdleTimeout`；
+  启动时清理进程被强杀留下的 `issues-*.tmp`。
+- Unity：`PlayerSettings.insecureHttpOption = AlwaysAllowed`（Android 9+ 默认禁止 http 明文，真机联调必须放开）；
+  `BackendConfig.NormalizeBaseUrl("http://")` 会被削成 `"http:"` 的 bug（加了协议头校验）；
+  平面数量事件只在「有/无」翻转时触发导致状态栏数字失真；协程里 NRE 会让「提交问题」按钮**永久失效**（加 null 检查 + `try/finally`）；
+  优先级配色是死代码（加 `RestyleLastMarker`，选完优先级立刻给最近的标记上色，顺带满足加分项）；
+  `renderer.material` 材质泄漏 → 改用 `MaterialPropertyBlock`；`Vector3Position.ToString()` 的 culture 问题；
+  `StatusText` 初始 null；`RemoveAllListeners()` 误删他人监听。
+
+### 5.3 新增的验证手段：Unity C# 语法检查
+
+因为本机没有 Unity 编辑器，我写了一个基于 Roslyn 的语法检查工具 `tools/SyntaxCheck`：
+用 `CSharpSyntaxTree.ParseText` 解析全部 Unity C# 文件，只报语法诊断。
+
+```
+> dotnet run --project tools/SyntaxCheck -- unity/Assets
+检查了 28 个 C# 文件，发现 0 个语法错误。
+```
+
+它**不能替代** Unity 编译器的类型检查（那需要 UnityEngine / AR Foundation 的程序集），
+但能挡住括号不配对、少分号这类低级错误。README 里已如实说明这个边界。
+
+### 5.4 测试不通过（红灯）记录汇总（本步）
+
+所有改动都遵循「先写失败用例，再改实现」：
+
+| 层 | 新增用例 | 红灯结果 | 改完后的绿灯 |
+| --- | --- | --- | --- |
+| Go | 超长标题 / 超长描述 / 405 方法不允许 / 500 不泄露路径（4 个） | `FAIL: TestCreateIssueTooLongTitleReturns400` 等 **4 failed** | 29 passed |
+| React | 响应体契约校验 3 个 + 请求取消 2 个 | **5 failed**（`getRequestTimeoutMs is not a function` 等） | 30 passed |
+| React | 并发刷新只认最后一次响应 | 新用例先写 | 30 passed |
+| Unity | 后端地址协议头 5 个 | **1 failed**（无协议头地址没有被拒绝） | 61 passed |
+
+### 5.5 最终测试结果
+
+| 层 | 用例数 | 结果 |
+| --- | --- | --- |
+| Go 后端 | 29 | ✅ |
+| React | 30 | ✅ |
+| Unity 纯逻辑 | 61 | ✅ |
+| Unity C# 语法检查 | 28 个文件 | ✅ 0 错 |
+| 三端端到端 | 25 条断言 | ✅ |
+| **合计** | **145 个自动化断言** | ✅ 全绿 |
+
+### 5.6 提交
+- 提交信息：`fix: 修复代码评审发现的缺陷（Unity 编译阻塞、误放标记、路径泄露、白屏、挂死），并补齐 README/AI_LOG/测试报告`
