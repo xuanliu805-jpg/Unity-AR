@@ -36,6 +36,7 @@ VITE_API_BASE_URL=http://192.168.1.20:8080 npm run dev
 
 ```
 VITE_API_BASE_URL=http://localhost:8080
+VITE_API_TIMEOUT_MS=8000
 ```
 
 > 注意：Vite 只在**启动/构建时**注入 `VITE_` 前缀变量，修改 `.env` 后必须重启 `npm run dev`
@@ -65,6 +66,14 @@ npm run dev           # 终端 B
 它实现了 `/api/health`、`/api/issues`、`PATCH /api/issues/{id}/status`、`DELETE /api/issues/{id}`
 以及与 Go 后端完全一致的错误响应格式 `{"error":{"code","message","field"}}`。
 
+### 请求超时
+
+`VITE_API_TIMEOUT_MS`（毫秒，默认 8000）控制单次请求的最长等待时间。
+
+这是 E2E 联调时发现并修掉的一个真实问题：后端进程被杀掉后，浏览器会复用之前的
+keep-alive 连接，这个请求既不报错也不返回，`fetch` 会一直挂着 —— 页面既不报错也没有
+「重试」按钮可点。加了超时之后，超时会转成 `NetworkError`，页面显示
+「请求超时（N 秒），后端可能未启动或网络不通」并给出重试按钮。
 ## 6. 后端 API 契约
 
 Base URL：`${VITE_API_BASE_URL}`（默认 `http://localhost:8080`）

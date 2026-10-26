@@ -23,6 +23,31 @@ import type {
 
 export const DEFAULT_API_BASE_URL = 'http://localhost:8080';
 
+/**
+ * 请求超时（毫秒）。
+ *
+ * 为什么要超时：后端进程被杀掉时，浏览器复用的 keep-alive 连接可能既不报错也不返回，
+ * fetch 会一直挂着。没有超时的话，页面会永远停在「加载中」，
+ * 用户既看不到错误提示，也没有「重试」按钮可点 —— 属于最糟糕的失败形态。
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
+
+/** 读取请求超时时间，可用 VITE_API_TIMEOUT_MS 覆盖。 */
+export function getRequestTimeoutMs(): number {
+  const raw =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_TIMEOUT_MS) || '';
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+/** 内部使用的超时标记。 */
+class RequestTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`请求超时（${timeoutMs} ms）`);
+    this.name = 'RequestTimeoutError';
+  }
+}
+
 /** 后端返回的业务错误（HTTP 状态码非 2xx）。 */
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
@@ -72,11 +97,45 @@ function isApiErrorBody(payload: unknown): payload is ApiErrorBody {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const timeoutMs = getRequestTimeoutMs();
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  // 上游 signal（例如组件卸载时取消请求）也要能中止本次请求
+  const upstream = init?.signal;
+  const onUpstreamAbort = () => controller.abort();
+  if (upstream) {
+    if (upstream.aborted) {
+      controller.abort();
+    } else {
+      upstream.addEventListener('abort', onUpstreamAbort);
+    }
+  }
+
+  // 用 Promise.race 而不是只依赖 fetch 自身的 abort：
+  // 真实浏览器里 fetch 一般会响应 abort，但某些代理/半开连接下不一定会 settle，
+  // race 才是保证「一定会结束」的办法。
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RequestTimeoutError(timeoutMs)), timeoutMs);
+  });
+
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await Promise.race([
+      fetch(url, { ...init, signal: controller.signal }),
+      timeoutPromise,
+    ]);
   } catch (error) {
+    if (error instanceof RequestTimeoutError) {
+      throw new NetworkError(
+        `请求超时（${Math.round(timeoutMs / 1000)} 秒），后端可能未启动或网络不通`,
+        error,
+      );
+    }
     throw new NetworkError('无法连接后端服务，请确认后端已启动', error);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (upstream) upstream.removeEventListener('abort', onUpstreamAbort);
   }
 
   let payload: unknown = null;

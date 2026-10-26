@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  getRequestTimeoutMs,
   DEFAULT_API_BASE_URL,
   NetworkError,
   apiUrl,
@@ -164,5 +166,28 @@ describe('deleteIssue', () => {
     expect(url).toBe(`${TEST_BASE}/api/issues/ISS-1`);
     expect(init.method).toBe('DELETE');
     expect(deleted).toBe('ISS-1');
+  });
+});
+describe('请求超时', () => {
+  it('后端一直不响应时按时抛出 NetworkError（而不是永远转圈）', async () => {
+    import.meta.env.VITE_API_TIMEOUT_MS = '50';
+    // fetch 永远不 resolve，模拟「后端进程被杀掉、连接半开」的挂死场景
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise(() => {})));
+
+    const error = await fetchIssues().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).message).toContain('超时');
+  });
+
+  it('默认超时时间是 8 秒', () => {
+    import.meta.env.VITE_API_TIMEOUT_MS = '';
+    expect(getRequestTimeoutMs()).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(8000);
+  });
+
+  it('可以通过环境变量调整超时时间', () => {
+    import.meta.env.VITE_API_TIMEOUT_MS = '3000';
+    expect(getRequestTimeoutMs()).toBe(3000);
   });
 });
