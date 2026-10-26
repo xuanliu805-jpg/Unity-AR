@@ -144,3 +144,213 @@ GET /api/health -> {"issues":1,...}
 ### 1.5 提交
 - 提交信息：`feat(server): 实现巡检问题 Go 后端、JSON 持久化与参数校验`
 - 提交内容：`server/` 全部源码与测试 + `docs/PLAN.md` + `docs/STEP_LOG.md` + `.gitignore`
+
+---
+
+## Step 2 — React 管理端
+
+**目标**：完成任务书 3.2（R9–R11），并顺带把加分项里的筛选/删除做掉。
+
+### 2.1 先写测试用例（TDD）
+
+由 AI 助手（sub-agent）按我给出的接口契约与验收标准先产出测试文件，我随后逐个文件复核：
+
+| 测试文件 | 用例 | 对应需求 |
+| --- | --- | --- |
+| `web/src/api/__tests__/api.test.ts` | base URL 拼接；`fetchIssues` 解析 `{issues,count}`；后端返回 `{error:{...}}` 时抛出带 message 的错误；**fetch reject（后端没启动）时抛出 NetworkError**；`updateStatus` 发 PATCH 且 body 为 `{"status":"..."}`；`deleteIssue` 发 DELETE | R9、R10、R11 |
+| `web/src/components/__tests__/IssueList.test.tsx` | 渲染出后端返回的标题/优先级/状态；下拉框选 `resolved` 会调用 `updateStatus` 并更新显示；`updateStatus` 失败时**回滚**并显示错误信息 | R10 |
+| `web/src/__tests__/App.test.tsx` | **后端不可用时页面显示错误提示而不是白屏**；空列表显示「暂无问题」空态 | R11 |
+
+### 2.2 测试不通过（红灯）
+AI 助手在实现前先跑过一次测试，此时 `src/api.ts`、`src/components/*` 尚不存在，
+Vitest 报 `Failed to resolve import` / `Cannot find module`，属于 TDD 的预期红灯。
+我接手复核时，测试与实现均已就位，因此本步的红灯证据以 AI 助手的执行记录为准，
+绿灯证据由我**亲自重新执行**确认（见 2.4）。
+
+### 2.3 实现（这一阶段具体做了什么）
+
+技术栈：React 18.3 + TypeScript 5.7 + Vite 5.4，测试用 Vitest 2.1 + @testing-library/react 16 + jsdom。
+**不引入任何 UI 组件库**，全部手写 CSS，避免版本冲突与体积膨胀。
+
+关键设计（我复核后认可并保留）：
+1. **错误分两类建模**：`ApiError`（后端返回了 `{error:{code,message,field}}` → 直接展示后端的中文 message）
+   与 `NetworkError`（fetch 本身 reject → "无法连接后端服务，请确认后端已启动"）。
+   这样 UI 能区分「参数填错了」和「后端根本没起来」，网络失败也绝不会被吞掉。
+2. **base URL 惰性读取**：`getApiBaseUrl()` 每次调用时读 `import.meta.env.VITE_API_BASE_URL`，
+   而不是模块加载时缓存成常量 —— 这样测试可以逐用例切换后端地址。
+3. **乐观更新 + 失败回滚**：行组件本地持有 `status`，change 时立即切换并调用 `updateStatus`，
+   失败则回滚到旧值并弹出错误条，不会出现「界面显示已解决、后端其实没改」的假象。
+4. **失败时不清空已有数据**：后端不可用只显示错误条并保留已加载的列表，避免网络抖动把界面清空。
+5. **筛选与删除（加分项）**：按优先级/状态下拉筛选；删除带二次确认。
+
+字段名与后端严格一致（`src/types.ts` 里逐字段对齐 Go 的 `model.Issue`）：
+`id / title / description / priority / status / position{x,y,z} / createdAt / updatedAt`。
+
+### 2.4 验证结果（我亲自重新执行）
+
+```
+> npm run test:run
+ ✓ src/api/__tests__/api.test.ts        (11 tests) 14ms
+ ✓ src/components/__tests__/IssueList.test.tsx (5 tests) 200ms
+ ✓ src/__tests__/App.test.tsx           (4 tests) 211ms
+ Test Files  3 passed (3)
+      Tests  20 passed (20)
+```
+
+```
+> npm run typecheck
+> tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit
+（0 错误）
+
+> npm run build
+✓ 36 modules transformed.
+dist/index.html                   0.40 kB │ gzip:  0.32 kB
+dist/assets/index-BajjKFB5.css    3.90 kB │ gzip:  1.41 kB
+dist/assets/index-CNIt0AWH.js   149.99 kB │ gzip: 48.89 kB
+✓ built in 725ms
+```
+
+### 2.5 遗留问题（如实记录）
+AI 助手做验证时，本机 `go` 不在 PATH 中，因此它是用 `web/scripts/mock-backend.mjs`
+（按 Go 契约写的等价 mock）完成的前端联调，**不是真实 Go 后端**。
+这一点在 Step 4 里由我改用**真实 Go 进程**重新做了端到端验证。
+
+### 2.6 提交
+- 提交信息：`feat(web): 实现 React 管理端问题列表、状态流转与错误处理`
+- 提交内容：`web/` 全部源码、测试与工程配置
+
+---
+
+## Step 3 — Unity AR 移动端
+
+**目标**：完成任务书 3.1（R12–R16）。
+
+### 3.0 动手前的关键调研（避免写出编译不过的代码）
+
+本机**没有安装 Unity 编辑器**（只装了 Unity Hub 且没有 Editor），所以 Unity 侧代码无法本地编译验证。
+为了不写出「看起来对但编译不过」的代码，我先把 AR Foundation 的 npm 包源码下载下来，逐个核对我要用到的 API 签名：
+
+```
+https://packages.unity.com/com.unity.xr.arfoundation/-/com.unity.xr.arfoundation-5.1.5.tgz
+```
+
+核对结果（全部以 5.1.5 包内源码为准）：
+
+| 我要用的 API | 5.1.5 源码里的真实签名 | 结论 |
+| --- | --- | --- |
+| `ARRaycastManager.Raycast` | `public bool Raycast(Vector2 screenPoint, List<ARRaycastHit> hitResults, TrackableType trackableTypes = TrackableType.AllTypes)` | 是**实例方法**；而且 5.x 已经**没有** `RaycastPlane` 参数了（网上大量老教程还在传 `RaycastPlane.PlaneWithinPolygon`，照抄必然编译失败） |
+| `ARRaycastHit.pose` | `public Pose pose => m_Transform.TransformPose(sessionRelativePose);` | 是**世界空间**坐标，可以直接用 |
+| `ARPlaneManager` | `public PlaneDetectionMode requestedDetectionMode` / `public event Action<ARPlanesChangedEventArgs> planesChanged` | 6.x 之前的 `ARPlaneTrackingMode` 已经不存在，必须用 `PlaneDetectionMode.Horizontal` |
+| `ARPlane` | `public PlaneAlignment alignment` | 判断水平面用 `PlaneAlignment.HorizontalUp / HorizontalDown` |
+| `ARSession` | `public static ARSessionState state` / `public static event Action<ARSessionStateChangedEventArgs> stateChanged` | **静态**成员，订阅/退订要小心重复订阅 |
+| `ARSessionState` | `None / Unsupported / CheckingAvailability / NeedsInstall / Installing / Ready / SessionInitializing / SessionTracking` | 与老教程里的 `Initializing/Moving/Tracking/Paused` **完全不同**，因此代码里只用 `ToString()` 再做字符串映射，不直接引用枚举成员，升级包也不会编译失败 |
+| `ARCameraManager` / `ARCameraBackground` | 都存在，`[RequireComponent(typeof(Camera))]` | 加在 Camera 物体上即可 |
+| `TrackableCollection<T>` | `struct`，有 `GetEnumerator()` | 可以直接 `foreach` |
+
+同时对比了 **AR Foundation 6.6.2**（Unity 6000.0）的 API，发现 6.x 对
+`ARSessionState`、`ARCameraManager`（不再有公开的 `camera`/`trackingType`）改动更大。
+因此最终选择 **Unity 2022.3 LTS + AR Foundation 5.1.5** 这条更稳、更常见的组合。
+
+### 3.1 先写测试用例（TDD）
+
+关键手法：**把与 UnityEngine 无关的纯逻辑抽到 `unity/Assets/Scripts/Core/`**，
+再用一个独立的 .NET 测试工程 `tools/UnityLogicTests` 以**链接方式**（`Compile Include`）引用同一批 `.cs` 文件。
+这样「Unity Test Runner 里跑的用例」和「命令行跑的用例」永远是同一份源文件，不会出现两套实现跑偏。
+
+| 测试文件 | 用例 | 对应需求 |
+| --- | --- | --- |
+| `IssueValidatorTests.cs` | 空标题/纯空格标题/null 标题 → 失败且 `field=title`；标题超长；描述为空仍通过；三种合法优先级通过；非法优先级 → `field=priority`；描述超长；坐标 NaN/Inf → `field=position`；空草稿不抛异常 | R14 |
+| `IssuePayloadBuilderTests.cs` | 请求体含 title/description/priority/position{x,y,z}；**不含** id/status/createdAt/updatedAt（都由后端生成）；首尾空白裁剪；双引号/反斜杠/换行正确转义；零坐标不多余精度；负坐标正常 | R14 |
+| `IssueEnumsTests.cs` | 优先级集合 = {low,medium,high}；状态集合 = {open,in_progress,resolved}；非法值被拒；中文显示名一一对应 | R14、R10 |
+| `ApiEndpointsTests.cs` | 路径拼接；ID 特殊字符转义；后端地址去尾斜杠/去空白/空值回落默认；局域网地址拼接 | 真机配置后端地址 |
+| `PlacementGateTests.cs` | **触点落在 UI 上 → 不放置**；面板打开（全局禁用）→ 不放置；没检测到平面 → 不放置；不是点击手势 → 不放置；判定优先级（禁用 > UI > 无平面 > 非点击）；每种原因都有中文提示 | **R16** |
+| `ApiResponseParserTests.cs` | 从响应里取问题 ID；取错误 message / field；转义引号还原；健康检查识别 | R15 |
+
+### 3.2 测试不通过（红灯）—— 原因分析
+
+第一次 `dotnet test`（实现文件尚未写）：
+
+```
+E:\简历题目\unity\Assets\Tests\EditMode\Core\PlacementGateTests.cs(16,24):
+error CS0246: 当前上下文中不存在名称"PlacementContext"
+```
+
+**原因**：测试先行，`PlacementContext` / `PlacementGate` 还没实现，编译失败 —— 预期的红灯。
+
+第二处红灯（响应解析）：
+
+```
+error CS0103: 当前上下文中不存在名称"ApiResponseParser"
+```
+
+**原因**：同上，`ApiResponseParser` 尚未实现。
+
+另外做了一次**「移除实现验证测试有效性」**的实验：把 `unity/Assets/Scripts/Core` 整个目录临时移走后重跑，
+56 个用例全部编译失败（`CS0234: 命名空间"UnityAR"中不存在类型或命名空间名"Core"`），
+说明这些用例确实在测实现，而不是空跑。
+
+### 3.3 实现（这一阶段具体做了什么）
+
+**目录结构**
+
+```
+unity/
+├─ Assets/
+│  ├─ Scripts/
+│  │  ├─ Core/        ← 不依赖 UnityEngine，可被 .NET 测试工程链接编译
+│  │  │   IssuePriorities / IssueStatuses / Vector3Position / IssueDraft
+│  │  │   ValidationResult / IssueValidator / IssuePayloadBuilder
+│  │  │   ApiEndpoints / BackendConfig / ApiResponseParser / PlacementGate
+│  │  ├─ Ar/          ← ARSessionController / PlacementController / MarkerStyler
+│  │  ├─ UI/          ← ApiClient / IssueFormController / StatusBanner / BackendSettings
+│  │  └─ Input/       ← TapSource（新老输入系统双实现）
+│  ├─ Editor/         ← SceneBuilder（一键生成场景）/ ArProjectSettings
+│  └─ Tests/EditMode/Core/   ← NUnit 用例
+├─ Packages/manifest.json     ← AR Foundation 5.1.5 / ARCore / ARKit / TMP / Input System
+└─ ProjectSettings/ProjectVersion.txt
+```
+
+**几个关键实现点**
+
+1. **UnityEditor.SceneBuilder**：用代码生成完整场景（相机 + ARCameraManager + ARCameraBackground、
+   ARSession + ARPlaneManager + ARRaycastManager、Canvas + 表单、EventSystem、全部组件连线）。
+   **为什么不用 .unity 文件**：手写 Unity 序列化 YAML 极易出错，而本机没有 Unity 编辑器可以校验；
+   与其提交一个「打开就报错」的场景文件，不如让评审点一下菜单就得到必然可用的场景，
+   而且场景结构在代码里一目了然。私有 `[SerializeField]` 字段用 `SerializedObject` 赋值。
+2. **放置判定三重保障**（对应 R16）：
+   - `PlacementGate`（纯逻辑，已单测）：判定顺序 = 全局禁用 > 触点在 UI 上 > 无平面 > 非点击；
+   - `EventSystem.current.IsPointerOverGameObject(fingerId)`：覆盖按钮/输入框/下拉框；
+   - `RectTransformUtility.RectangleContainsScreenPoint(uiBlocker, ...)`：填写面板矩形内一律不放标记
+     （防止某些 UI 模块配置下 EventSystem 不更新触摸命中状态）。
+   另外填写面板打开时直接把 `placement.PlacementEnabled = false`。
+3. **输入系统兼容**：`ITapSource` 接口 + `#if ENABLE_INPUT_SYSTEM` / `#if ENABLE_LEGACY_INPUT_MANAGER`
+   两套实现 + `TapSourceFactory`。Unity 的「Active Input Handling」有 Old/New/Both 三种，
+   直接写 `Input.GetTouch` 或 `Touchscreen.current` 都可能编译不过，这样写两边都能编。
+4. **JSON 手写序列化**：请求体不依赖 `JsonUtility`/Newtonsoft，`IssuePayloadBuilder` 自己拼 JSON 并做转义，
+   因此可以被 .NET 单测逐字符断言；数字用 `InvariantCulture` 格式化，避免中文 Windows 上把小数点写成逗号。
+5. **响应解析**：`ApiResponseParser` 定向查找 `"issue"`/`"error"` 并还原转义，
+   避免为「取一个 ID」引入整个 JSON 库（IL2CPP 打包体积友好）。
+6. **真机后端地址**：`BackendSettings` 组件把地址写在 Inspector 里，运行时也能改，改完存 PlayerPrefs；
+   `BackendConfig.NormalizeBaseUrl` 负责去尾斜杠/空值回落。
+7. **优先级用三个按钮而不是下拉框**：TMP 下拉框需要复杂的模板 GameObject，用代码搭模板极易出错；
+   三个大按钮在手机上反而更不容易误触，也省掉一整段易错的模板构建代码。
+
+### 3.4 验证结果
+
+```
+> dotnet test tools/UnityLogicTests/UnityLogicTests.csproj
+已通过! - 失败: 0，通过: 56，已跳过: 0，总计: 56
+```
+
+56 个用例全部通过（覆盖校验、序列化、枚举、路径拼接、放置判定、响应解析）。
+
+### 3.5 未完成 / 已知问题（如实记录，重要）
+- **没有 Unity 编辑器，Unity 工程未在本机编译过**，真机 AR 也**未实测**。
+  凡是依赖 UnityEngine / AR Foundation 的代码（`Ar/`、`UI/`、`Input/`、`Editor/`）只做了**源码级 API 核对**（对照 5.1.5 包内源码逐个确认签名），
+  没有经过 Unity 编译器与真机验证。README 中已明确标注这一点。
+- **没有演示视频**：任务书要求两段 3–5 分钟的手机/电脑录屏，需要真实设备与 Unity 编辑器，本机无法产出。
+  README 中给出可复现的演示脚本（Demo 脚本），但视频本身**缺失**。
+- 场景文件由脚本生成而非提交 `.unity`（原因见 3.3.1）。
+
+### 3.6 提交
+- 提交信息：`feat(unity): 实现 AR 平面检测、标记放置、问题上报与纯逻辑单元测试`
