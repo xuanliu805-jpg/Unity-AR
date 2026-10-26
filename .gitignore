@@ -1,0 +1,41 @@
+# ---- Go 后端 ----
+server/server.exe
+server/server
+server/*.exe
+server/data/*.json
+
+# ---- Node / React ----
+web/node_modules/
+web/dist/
+web/coverage/
+web/.vite/
+*.log
+npm-debug.log*
+
+# ---- Unity ----
+unity/Library/
+unity/Temp/
+unity/Obj/
+unity/Build/
+unity/Builds/
+unity/Logs/
+unity/UserSettings/
+unity/.vs/
+unity/.idea/
+unity/*.csproj
+unity/*.sln
+unity/consistency_check.json
+
+# ---- .NET 工具工程 ----
+tools/**/bin/
+tools/**/obj/
+
+# ---- 系统文件 ----
+Thumbs.db
+.DS_Store
+desktop.ini
+.vscode/
+.idea/
+
+# Office 临时锁文件
+~$*
