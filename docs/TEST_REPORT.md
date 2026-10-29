@@ -12,9 +12,12 @@
 | React 单元 / 组件测试 | Vitest + Testing Library | 30 | ✅ 全部通过 |
 | React 类型检查 | `tsc --noEmit` | — | ✅ 0 错误 |
 | React 生产构建 | `vite build` | — | ✅ 构建成功 |
-| Unity 纯逻辑单元测试 | NUnit（`dotnet test`） | 61 | ✅ 全部通过 |
+| **Unity Test Runner（EditMode）** | Unity.exe -batchmode -runTests -testPlatform EditMode | **61** | ✅ **在真实 Unity 里全部通过** |
+| Unity 纯逻辑单元测试（无 Unity 环境） | NUnit（dotnet test） | 61 | ✅ 全部通过（同一批源文件） |
 | Unity C# 语法检查 | Roslyn（`tools/SyntaxCheck`） | 28 个文件 | ✅ 0 个语法错误 |
 | 三端端到端 | Playwright + 真实 Go 进程 | 25 条断言 | ✅ 全部通过 |
+| **Unity 编译** | Unity.exe -batchmode -quit -projectPath unity | ✅ 0 error 0 warning |
+| **Android APK** | Unity.exe -batchmode -executeMethod ProjectSetup.BuildApk | ✅ 30 MB，IL2CPP + arm64 + ARCore |
 | **合计** | | **145** | ✅ |
 
 ---
@@ -234,15 +237,15 @@ node scripts/e2e.mjs
 
 | 项 | 原因 |
 | --- | --- |
-| Unity 编辑器内编译 | 本机没有安装 Unity Editor，无法运行 Unity 编译器 |
-| Unity EditMode 用例在 Unity 内运行 | 同上；已用 `dotnet test` 在同一批源文件上真实执行 |
-| 真机 AR（平面检测 / 放置 / 提交） | 本机没有 AR 手机 |
-| Android / iOS 打包 | 同上 |
-| 演示视频 | 同上 |
-| Go 的并发压力测试 | 原型规模下用写锁 + 原子写已经足够，未做专门压测 |
+| 真机放置标记的**视觉**确认 | 手机一直放在桌上对着墙，ARCore 检不到地面平面，没法真正点地面放置。**放置的判定逻辑**已由 9 个 `PlacementGateTests` 覆盖，且真机上「点界面控件被正确忽略」已实测通过 |
+| 真机输入中文 | `adb shell input text` 注入的 ASCII 会被这台机器的中文输入法吞掉；**人工在真机上手动输入并提交成功**（后端收到 `ISS-1793287849089-G6AGFCNXLPMR4`） |
+| 演示视频 | 需要人工操作手机录制；管理端部分已有自动化截图与 E2E 断言替代 |
+| iOS / ARKit 打包 | 本机没有 macOS 与 Xcode，只配置了代码路径（`ArProjectSettings.ConfigureIos()`），未实测 |
+| Go 的并发压力测试 | 原型规模下写锁 + 原子写已经足够，未做专门压测 |
 
-替代措施：
+替代措施与补充验证：
 - Unity 侧用 **Roslyn 语法检查**（`tools/SyntaxCheck`）覆盖语法层面的错误：28 个文件、0 错误；
-- Unity 侧用**逐条对照 AR Foundation 5.1.5 / TextMeshPro 3.0.6 包内源码**核对 API 签名；
+- Unity 侧用**逐条对照 AR Foundation 5.1.5 / TextMeshPro 3.0.6 / Input System 1.7.0 包内源码**核对 API 签名；
 - Unity 侧的**业务逻辑**（校验、序列化、放置判定、响应解析、路径拼接）全部抽成不依赖 `UnityEngine` 的纯 C#，
-  已经过 61 个自动化用例。
+  已经过 61 个自动化用例，并且**在真实 Unity Test Runner 里也跑过一遍**；
+- 真机上的完整闭环（上报 → Go → React → 改状态）已用真实设备 + 真实后端 + 真实浏览器验证，截图见 `docs/screenshots/`。

@@ -161,8 +161,21 @@ namespace UnityAR.EditorTools
 
             // ---------- EventSystem ----------
             var eventSystemGo = new GameObject("EventSystem", typeof(EventSystem));
+            var eventSystem = eventSystemGo.GetComponent<EventSystem>();
+
+            // 先把可能存在的输入模块全部移除，保证只有一种，
+            // 避免出现「旧模块 + 新模块并存」时谁先抢到事件不确定。
+            foreach (var existing in eventSystem.GetComponents<BaseInputModule>())
+            {
+                UnityEngine.Object.DestroyImmediate(existing);
+            }
+
 #if ENABLE_INPUT_SYSTEM
-            eventSystemGo.AddComponent<InputSystemUIInputModule>();
+            // 新输入系统的 UI 模块。AddComponent 后 OnEnable 里会自动 AssignDefaultActions()，
+            // 这里再显式调一次，保证「脚本生成场景」这条路径下默认动作一定被分配 ——
+            // 少了默认动作，按钮不会响应点击、输入框不会聚焦，而且不会有任何报错。
+            var uiInputModule = eventSystemGo.AddComponent<InputSystemUIInputModule>();
+            uiInputModule.AssignDefaultActions();
 #else
             eventSystemGo.AddComponent<StandaloneInputModule>();
 #endif

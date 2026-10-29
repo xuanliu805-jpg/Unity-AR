@@ -606,3 +606,154 @@ Step 2 里 AI 助手因为本机没有 Go，用一个 mock 后端做的前端联
 
 ### 5.6 提交
 - 提交信息：`fix: 修复代码评审发现的缺陷（Unity 编译阻塞、误放标记、路径泄露、白屏、挂死），并补齐 README/AI_LOG/测试报告`
+
+---
+
+## Step 6 — Unity 真实编译、真机打包与真机验证
+
+**背景**：Step 5 结束时 Unity 代码只做到了「源码级 API 核对」（对照 AR Foundation 5.1.5 包内源码逐个确认签名），
+因为当时机器上没装 Unity 编辑器。本步把环境补齐，**把「核对」升级成「真编译 + 真机跑」**。
+
+### 6.1 环境准备（全部实测通过）
+
+| 项 | 版本 / 路径 |
+| --- | --- |
+| Unity Hub | 3.3.7.0（`C:\Program Files\Unity Hub`） |
+| Unity 编辑器 | **2022.3.62f3c1**（中国区 LTS 发布版，`E:\Unity\Editors`） |
+| Android Build Support | 已装（`UnitySetup-Android-Support-for-Editor`） |
+| OpenJDK | 11.0.14.1+1 |
+| Android SDK | platform-tools 32 / build-tools 34 / platforms android-34 / cmdline-tools 6.0 |
+| Android NDK | r23b（23.1.7779620） |
+| Go | 1.27.3（写入用户 PATH） |
+| .NET SDK | 8.0.427（写入用户 PATH） |
+| 手机 | vivo V2302A，Android 16 (API 36)，arm64-v8a，已装 `com.google.ar.core` |
+
+安装源用的是 Unity 中国区 CDN（`download.unitychina.cn`，实测 37 MB/s，3.6 GB 编辑器 1.7 分钟下完）。
+
+### 6.2 真实编译（第一次就通过）
+
+```powershell
+Unity.exe -batchmode -quit -nographics -projectPath E:\简历题目\unity -logFile compile.log
+```
+
+结果：**退出码 0，0 个 `error CS`，0 个 `warning CS`**，生成 4 个程序集：
+`UnityAR.Core.dll` / `UnityAR.Runtime.dll` / `UnityAR.Editor.dll` / `UnityAR.Tests.EditMode.dll`。
+
+这一步同时验证了 Step 5 里 AI 评审指出的**两个编译阻塞问题确实修对了**：
+- `namespace UnityAR.Input` 遮蔽 `UnityEngine.Input`（CS0234）
+- `TMP_InputField.viewport` 在 TMP 3.0.6 中应为 `textViewport`（CS1061）
+
+### 6.3 Unity Test Runner 真实执行（61 个用例）
+
+```powershell
+Unity.exe -batchmode -runTests -testPlatform EditMode -projectPath E:\简历题目\unity -testResults results.xml
+```
+
+```
+total : 61   passed : 61   failed : 0   skipped : 0   result : Passed
+```
+
+### 6.4 打包 APK 过程中踩到的 5 个坑（每一个都写清了现象与原因）
+
+| # | 现象 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `An error occurred while resolving packages: com.unity.test-framework.tests cannot be found` | `manifest.json` 里多写了 `"testables": ["com.unity.test-framework"]`，它会连带解析一个不存在的相关包 | 删掉 `testables` 段 |
+| 2 | `No valid Unity Editor license found` | 没激活 | 用 `Unity.Licensing.Client` 走 Unity 账号激活（`.ulf`） |
+| 3 | `Invalid project path ... contains non-ASCII characters` | **工程路径 `E:\简历题目\unity` 含中文**，Android 构建工具链（Gradle/aapt/NDK）不支持非 ASCII 路径 | 复制到纯 ASCII 目录 `E:\UnityBuild\UnityAR` 再打包，`scripts/build_android.ps1` 已封装 |
+| 4 | `BuildFailedException: You have enabled the Vulkan graphics API, which is not supported by ARCore` | Unity 2022.3 的 Android 默认图形 API 含 Vulkan | 显式设为 `GraphicsDeviceType.OpenGLES3` |
+| 5 | `Android NDK not found` | Unity 期望 NDK 根目录**直接**含 `ndk-build.cmd`，而解压出来是 `NDK/android-ndk-r23b/` | 把内容上提一层；脚本里加了 `FindNdkRoot()` 自动探测 |
+| 6 | `ARCore requires Gradle 5.6.4 or later ... unless the active build platform is Android` | 当前活动构建平台不是 Android | 打包前 `EditorUserBuildSettings.SwitchActiveBuildTarget(Android)` |
+
+最终 APK：**30 MB，IL2CPP + arm64-v8a**，`aapt2 dump badging` 验证：
+
+```
+package: name='com.example.unityar.inspect' versionCode='1' versionName='1.0'
+sdkVersion:'24'   targetSdkVersion:'34'
+uses-permission: name='android.permission.INTERNET'
+uses-permission: name='android.permission.CAMERA'
+uses-feature: name='android.hardware.camera.ar'        ← ARCore 已设为必需
+native-code: 'arm64-v8a'
+lib/arm64-v8a/libUnityARCore.so / libarcore_sdk_c.so / libarcore_sdk_jni.so / libil2cpp.so
+```
+
+### 6.5 真机上发现的 2 个问题（只有真机才暴露）
+
+#### 问题 A：界面中文全部显示成方框 □□
+
+**现象**：APK 装到手机后，相机画面正常、平面检测正常（顶部显示「检测到 1 个水平平面」），
+但**所有中文都是方框**。
+
+**根因**：TMP Essential Resources 自带的默认字体是 LiberationSans SDF，**只有拉丁字形，没有中文**。
+编辑器里如果连 TMP 资源都没导入，界面是全空白，反而看不出是「缺字形」。
+
+**修法**：
+1. 引入开源中文字体 **LXGW 霞鹜文楷**（SIL OFL 1.1，可自由分发商用）到 `unity/Assets/Fonts/`；
+2. 新增 `Assets/Editor/ChineseFontSetup.cs`，用 `TMP_FontAsset.CreateFontAsset(ttf)` 生成**动态**字体资源
+   （动态模式下字形图集运行时按需生成，只有用到的字进图集，不撑包体也不会缺字）；
+3. 通过 `SerializedObject` 改 `TMP_Settings` 的私有字段 `m_defaultFontAsset` / `m_defaultFontAssetPath`
+   （`defaultFontAsset` 属性是只读的）；
+4. 遍历场景里所有 `TMP_Text` 显式替换字体。
+
+**注意执行顺序**：必须在 `BuildScene()` **之后**做 —— 生成场景会新建 TMP 文本，先换字体会被覆盖。
+
+#### 问题 B：UI 完全收不到点击（按钮无反应、输入框不聚焦）
+
+**现象**：点按钮无反应、点输入框键盘不弹；但 AR 放置判定却能正确提示「点击了界面控件，已忽略该操作」。
+
+**定位过程**：写了一个诊断方法 `EventSystemDiagnostics.Diagnose()`，在真 Unity 里打印事实：
+
+```
+编译期宏 ENABLE_INPUT_SYSTEM      : 未定义
+编译期宏 ENABLE_LEGACY_INPUT_MANAGER: 已定义（旧输入系统）
+运行时 activeInputHandler            : 0  (0=旧 1=新 2=Both)
+场景里的 EventSystem                : EventSystem
+  挂载的输入模块数量               : 1
+    - UnityEngine.EventSystems.StandaloneInputModule  enabled=True
+Canvas 的 GraphicRaycaster          : 有
+```
+
+配置本身是自洽的（都是旧输入系统），但**工程装了 Input System 包却只启用旧输入系统**，
+这套组合在 Android 上 UI 收不到输入。注意我的 `RaycastAll` 判定是**当场重算**的，
+所以它能正确识别 UI 命中 —— 这也反过来证明「场景结构没问题，问题在事件系统的输入模块」。
+
+**修法**：
+1. `ProjectSettings.asset` 里 `activeInputHandler: 0` → `2`（Both），两个宏都定义；
+2. `SceneBuilder` 里**先移除已有的 `BaseInputModule`**，再挂 `InputSystemUIInputModule`，
+   并**显式调用 `AssignDefaultActions()`**（`OnEnable` 里虽然会调，但脚本生成场景这条路径要确保万无一失）；
+3. 改完后重新诊断确认：
+
+```
+编译期宏 ENABLE_INPUT_SYSTEM      : 已定义（新输入系统）
+运行时 activeInputHandler            : 2  (0=旧 1=新 2=Both)
+    - UnityEngine.InputSystem.UI.InputSystemUIInputModule  enabled=True
+      actionsAsset                 : DefaultInputActions
+```
+
+修完重新打包装机，**输入框能正常聚焦、软键盘弹出**。
+
+### 6.6 真机上的完整闭环验证 ✅
+
+用 `adb reverse tcp:8080 tcp:8080` 把手机的 `localhost:8080` 隧道到电脑的 Go 后端
+（这样不受 WiFi、IP 变化、防火墙影响），然后：
+
+| 步骤 | 验证结果 | 截图 |
+| --- | --- | --- |
+| App 启动，相机画面正常 | ✅ AR 相机出图 | `docs/screenshots/07-真机中文界面.png` |
+| AR 平面检测 | ✅ 顶部提示「检测到 1 个水平平面，点击地面放置标记」 | 同上 |
+| 点击界面控件 | ✅ 提示「点击了界面控件，已忽略该操作」——**任务书要求的「点按钮不误放标记」在真机上被验证** | `docs/screenshots/08-真机放置标记.png` |
+| 手机提交问题 | ✅ 提示「上报成功，问题编号 ISS-1793287849089-G6AGFCNXLPMR4」，**Go 后端真的收到了** | 同上 |
+| React 网页看到该条 | ✅ 列表第 4 行就是它 | `docs/screenshots/09-React看到真机上报的数据.png` |
+| React 改状态 | ✅ 下拉框改成「已解决」，后端确认 `status: resolved`、`updatedAt` 已更新 | `docs/screenshots/10-React改状态为已解决.png` |
+
+> 备注：截图里手机端那条的标题是「1」、描述是「2」，
+> 是**人工在真机上敲的**（当时正在手机上操作授权），不是 App 的问题；
+> 我用 `adb shell input text` 注入的文本会被这台机器的中文输入法吞掉，属于 adb/IME 的限制。
+
+### 6.7 交付物更新
+
+- 新增 `scripts/build_android.ps1`：自动处理「复制到 ASCII 路径 → 打包 → APK 拷回」的流程；
+- 新增 `unity/Assets/Editor/ProjectSetup.cs`：一键准备（TMP 资源 / 中文字体 / 生成场景 / Android 设置 / ARCore Loader）+ 一键打包；
+- 新增 `unity/Assets/Editor/ChineseFontSetup.cs`：中文字体资源生成；
+- 新增 `unity/Assets/Editor/EventSystemDiagnostics.cs`：输入系统与 EventSystem 配置的诊断工具；
+- `unity/Assets/Scenes/ARInspect.unity`、`unity/Assets/XR/**`、`unity/Assets/TextMesh Pro/**` 已纳入版本库；
+- `unity/ProjectSettings/` 现在是 Unity 真实生成的完整配置（`activeInputHandler: 2`）。

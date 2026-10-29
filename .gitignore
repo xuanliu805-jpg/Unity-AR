@@ -39,3 +39,7 @@ desktop.ini
 
 # Office 临时锁文件
 ~$*
+
+# Unity 打包产物（工作目录，不入库）
+build/
+unity/build/

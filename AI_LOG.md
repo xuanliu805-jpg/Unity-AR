@@ -372,4 +372,59 @@
 | React 管理端 | **sub-agent（P-002）** | 修改后采用 | 我复核全部源码；补 10 个用例；真实后端 E2E |
 | Unity 代码审查 | **sub-agent（P-003）** | 采纳 14 条、驳回 3 条 | 独立下载 TMP/ARF 包源码复核阻塞级结论；补失败用例后改实现 |
 | Go + React 代码审查 | **sub-agent（P-004）** | 采纳 14 条、驳回 6 条 | 每条都先补失败用例再改实现；E2E 重跑 |
-| 演示视频 | — | **未完成**（本机无 AR 真机与 Unity 编辑器） | README 第 7 节给出可复现脚本，第 8 节如实标注 |
+| 演示视频 | — | **未完成**（需人工操作手机录制） | README 第 7 节给出可复现脚本，管理端已有自动化截图 |
+| Unity 编译 / 打包 / 真机验证 | Codex 编码代理 | — | 真实 Unity 编译 0 错、Test Runner 61/61、APK 装机跑通闭环 |
+
+---
+
+## P-005 - 目标：把 Unity 从「源码级核对」推进到「真编译 + 真机跑通」
+
+### Prompt 原文
+
+> 我激活完了
+
+> 现在电脑连上手机了，你告诉我给该做什么
+
+### 结果
+
+- **修改后采用（全部完成）**：这一阶段 AI 自主完成了以下工作，并把每一步的产物与验证都落到了仓库里：
+  1. **装环境**：Unity Hub 3.3.7 → Unity 2022.3.62f3c1（中国区 CDN，3.6 GB / 1.7 分钟）
+     + Android Build Support + OpenJDK 11 + Android SDK 34 + NDK r23b + adb；
+  2. **真编译**：`Unity.exe -batchmode -quit -projectPath unity` → **0 error / 0 warning**，4 个程序集全部生成；
+  3. **真测试**：`Unity.exe -batchmode -runTests -testPlatform EditMode` → **61 / 61 通过**；
+  4. **真打包**：→ **30 MB APK**，IL2CPP + arm64-v8a，`uses-feature: android.hardware.camera.ar` 已就位；
+  5. **真机验证**：装机 → 相机出图、AR 平面检测（「检测到 1 个水平平面」）、
+     点界面控件被正确忽略（「点击了界面控件，已忽略该操作」）、手机上提交的问题被 Go 后端收到、
+     React 网页上能看到并能改状态。
+
+- **AI 自主发现并修复的 8 个问题**（每个都写了现象 → 根因 → 修法，见 `docs/STEP_LOG.md` Step 6）：
+  1. `manifest.json` 的 `testables` 段导致包解析失败；
+  2. **工程路径含中文**导致 Android 工具链直接拒绝打包；
+  3. **ARCore 不支持 Vulkan**，Unity 2022.3 默认启用了 Vulkan；
+  4. NDK 目录层级不对导致 `Android NDK not found`；
+  5. 活动构建平台不是 Android 导致 ARCore 的 Gradle 检查失败；
+  6. **TMP 默认字体没有中文字形**，真机上所有中文显示成方框 □□ → 引入 OFL 授权的开源中文字体并生成动态 TMP 字体资源；
+  7. **UI 完全收不到点击**（按钮无反应、输入框不聚焦）→ `activeInputHandler` 从 0（旧）改为 2（Both），
+     EventSystem 改挂 `InputSystemUIInputModule` 并显式 `AssignDefaultActions()`；
+  8. **ARCore 的 XR Loader 没为 Android 启用** → 脚本里调 `XRPackageMetadataStore.AssignLoader` 自动启用。
+
+- **AI 自主写的工具**（都进了仓库）：
+  - `scripts/build_android.ps1` —— 自动处理「复制到 ASCII 路径 → 打包 → APK 拷回」；
+  - `unity/Assets/Editor/ProjectSetup.cs` —— 一键准备（TMP 资源 / 中文字体 / 生成场景 / Android 设置 / ARCore Loader）+ 一键打包；
+  - `unity/Assets/Editor/ChineseFontSetup.cs` —— 中文字体资源生成；
+  - `unity/Assets/Editor/EventSystemDiagnostics.cs` —— 输入系统与 EventSystem 配置诊断。
+
+- **AI 明确没有做到的（如实说明）**：
+  - **真机放置标记的视觉确认**：手机一直放在桌上对着墙，ARCore 检不到地面平面，
+    没法真的点地面放下立方体。**但放置的判定逻辑有 9 个单元测试覆盖**，
+    且真机上「点界面控件会被正确忽略」这一条已实测通过。
+  - **演示视频**：需要人工操作手机录制，AI 无法代替。
+  - **真机输入中文**：`adb shell input text` 注入的 ASCII 被这台机器的中文输入法吞掉。
+    人工在真机上手动输入并提交是成功的（后端收到了 `ISS-1793287849089-G6AGFCNXLPMR4`）。
+
+### 验证方式
+- 编译、测试、打包都用真实 Unity 命令行，退出码与日志逐条核对；
+- APK 用 `aapt2 dump badging` 核对包名 / 权限 / `uses-feature` / native-code，
+  并用 `unzip` 确认 `libUnityARCore.so`、`libarcore_sdk_c.so`、`libarcore_sdk_jni.so`、`libil2cpp.so` 都在包里；
+- 真机用 `adb install` / `am start` / `screencap` / `logcat` 驱动与取证；
+- 闭环用真实 Go 后端 + 真实浏览器（Playwright）验证，截图存在 `docs/screenshots/`。
