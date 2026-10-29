@@ -51,7 +51,7 @@ Unity AR 放置标记并上报  →  Go 后端保存  →  React 页面查看问
 | 存储 | 本地 JSON 文件 + 原子写 | — |
 | 管理端 | React 18.3 + TypeScript 5.7 + Vite 5.4 | Node v24.14.1 / npm 11.11.0 |
 | 管理端测试 | Vitest 2.1 + @testing-library/react 16 + jsdom | — |
-| 移动端 | Unity LTS + AR Foundation | Unity 2022.3 LTS（建议 2022.3.62f1）+ AR Foundation 5.1.5 |
+| 移动端 | Unity LTS + AR Foundation | Unity 2022.3 LTS（实测 2022.3.62f3c1，中国区发布版）+ AR Foundation 5.1.5 |
 | 移动端测试 | NUnit（Unity Test Framework 1.1.33） | 同一批用例也能用 .NET 8 跑 |
 | 端到端 | Playwright（无头 Chromium） | — |
 
@@ -95,7 +95,7 @@ npm run dev        # http://127.0.0.1:5173
 
 ### 3.3 打开 Unity AR 客户端
 
-1. 用 **Unity 2022.3 LTS** 打开 `unity/` 目录。首次打开需要联网拉取 `Packages/manifest.json` 里声明的包。
+1. 用 **Unity 2022.3 LTS**（实测 2022.3.62f3c1）打开 `unity/` 目录。首次打开需要联网拉取 `Packages/manifest.json` 里声明的包。
 2. 菜单 **Window → TextMeshPro → Import TMP Essential Resources**（只需做一次，否则界面文字不显示）。
 3. 菜单 **Tools → AR 巡检 → 生成巡检场景**，生成 `Assets/Scenes/ARInspect.unity`（完整场景 + 全部组件连线）。
 4. 菜单 **Tools → AR 巡检 → 配置 Android AR 设置**（iOS 用「配置 iOS AR 设置」）。

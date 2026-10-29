@@ -1,7 +1,7 @@
 # Unity 工程说明
 
 ## 打开方式
-1. 用 **Unity 2022.3 LTS**（推荐 2022.3.62f1 或更高）打开本目录。
+1. 用 **Unity 2022.3 LTS**（实测 2022.3.62f3c1）打开本目录。
    首次打开时 Unity 会自动拉取 `Packages/manifest.json` 里声明的包（AR Foundation 5.1.5 等），
    需要联网并等待几分钟。
 2. 打开后执行一次菜单 **Window → TextMeshPro → Import TMP Essential Resources**（只需一次），
