@@ -13,6 +13,9 @@ Unity AR 放置标记并上报  →  Go 后端保存  →  React 页面查看问
 | --- | --- |
 | ![列表](docs/screenshots/01-列表显示Unity上报的问题.png) | ![降级](docs/screenshots/03-后端不可用时显示错误提示.png) |
 
+> 📖 **想自己跑一遍看这里** → [`RUN.md`](RUN.md)（启动指南：后端 / 管理端 / 真机三部分怎么开，
+> 以及所有已知坑的速查表）。
+>
 > 详细的分步记录（每一步先写的测试、失败原因、具体做了什么、验证结果、提交信息）见
 > **[`docs/STEP_LOG.md`](docs/STEP_LOG.md)**；任务拆解与计划见 [`docs/PLAN.md`](docs/PLAN.md)；
 > 测试总览见 [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md)；AI 使用记录见 [`AI_LOG.md`](AI_LOG.md)。
