@@ -34,9 +34,13 @@ namespace UnityAR.UI
         [SerializeField] private Button toggleButton;
         [SerializeField] private TMP_Text feedbackText;
         [SerializeField] private TMP_Text positionText;
+        [SerializeField] private Button triageButton;
+        [SerializeField] private Button triageAdoptButton;
+        [SerializeField] private TMP_Text triageText;
 
                 private Coroutine submitRoutine;
         private string selectedPriority = IssuePriorities.Medium;
+        private string suggestedPriority = string.Empty;
 
         // 保存每个优先级按钮的委托，OnDestroy 时用 RemoveListener 精确移除，
         // 不��� RemoveAllListeners（那会把 Inspector 里手工挂的监听也一起清掉）。
@@ -101,6 +105,17 @@ namespace UnityAR.UI
                 }
             }
 
+            if (triageButton != null)
+            {
+                triageButton.onClick.AddListener(OnTriageClicked);
+            }
+
+            if (triageAdoptButton != null)
+            {
+                triageAdoptButton.onClick.AddListener(OnAdoptSuggestedPriority);
+                triageAdoptButton.gameObject.SetActive(false);
+            }
+
             if (placement != null)
             {
                 placement.MarkerPlaced += OnMarkerPlaced;
@@ -134,6 +149,16 @@ namespace UnityAR.UI
                 priorityHandlers.Clear();
             }
 
+            if (triageButton != null)
+            {
+                triageButton.onClick.RemoveListener(OnTriageClicked);
+            }
+
+            if (triageAdoptButton != null)
+            {
+                triageAdoptButton.onClick.RemoveListener(OnAdoptSuggestedPriority);
+            }
+
             if (placement != null)
             {
                 placement.MarkerPlaced -= OnMarkerPlaced;
@@ -155,6 +180,7 @@ namespace UnityAR.UI
 
         private void OnToggleClicked()
         {
+            Debug.Log("[调试] OnToggleClicked 被调用，IsFormOpen=" + IsFormOpen);
             SetFormVisible(!IsFormOpen);
         }
 
@@ -171,7 +197,7 @@ namespace UnityAR.UI
             // 让画面里的标记颜色跟着优先级走（加分项：按优先级改变 AR 标记样式）。
             if (placement != null)
             {
-                placement.RestyleLastMarker(selectedPriority);
+                placement.RestyleLastMarker(selectedPriority, IssueStatuses.Open);
             }
         }
 
@@ -311,6 +337,139 @@ namespace UnityAR.UI
             }
         }
 
+        /// <summary>
+        /// 调用后端的「智能分诊」，给出建议优先级、类别与重复报修风险。
+        ///
+        /// 分诊结果**只是建议**，不会自动改掉巡检员已经选的优先级；
+        /// 想采纳要点「采纳建议优先级」。
+        /// </summary>
+        private void OnTriageClicked()
+        {
+            if (apiClient == null)
+            {
+                ShowFeedback("无法分诊：ApiClient 没有配置", true);
+                return;
+            }
+
+            var draft = BuildDraft();
+            if (string.IsNullOrEmpty(draft.Title))
+            {
+                ShowFeedback("无法分诊：请先填写问题标题", true);
+                return;
+            }
+
+            if (triageButton != null)
+            {
+                triageButton.interactable = false;
+            }
+
+            ShowTriage("正在分析…");
+
+            StartCoroutine(apiClient.Triage(draft.Title, draft.Description, draft.Position, result =>
+            {
+                if (triageButton != null)
+                {
+                    triageButton.interactable = true;
+                }
+
+                if (result == null)
+                {
+                    ShowTriage("分诊失败：连不上后端，请检查后端地址");
+                    return;
+                }
+
+                suggestedPriority = result.SuggestedPriority;
+                ShowTriage(FormatTriage(result));
+
+                if (triageAdoptButton != null)
+                {
+                    triageAdoptButton.gameObject.SetActive(true);
+                }
+            }));
+        }
+
+        /// <summary>把分诊建议的优先级应用到表单。</summary>
+        private void OnAdoptSuggestedPriority()
+        {
+            if (string.IsNullOrEmpty(suggestedPriority))
+            {
+                return;
+            }
+
+            var index = System.Array.IndexOf(IssuePriorities.All, suggestedPriority);
+            if (index < 0)
+            {
+                return;
+            }
+
+            OnPriorityButtonClicked(index);
+            ShowFeedback("已采纳建议优先级：" + IssuePriorities.DisplayName(suggestedPriority), false);
+
+            if (triageAdoptButton != null)
+            {
+                triageAdoptButton.gameObject.SetActive(false);
+            }
+        }
+
+        /// <summary>把分诊结果拼成给巡检员看的文字。</summary>
+        private string FormatTriage(TriageResult result)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append("建议优先级：").Append(IssuePriorities.DisplayName(result.SuggestedPriority));
+            sb.Append("　类别：").Append(result.SuggestedCategory);
+            sb.Append("　可信度：").Append(Mathf.RoundToInt((float)result.Confidence * 100f)).Append("%");
+
+            if (result.HasDuplicateRisk)
+            {
+                sb.Append("\n⚠ 可能重复报修，请先确认");
+            }
+
+            if (result.Keywords != null && result.Keywords.Count > 0)
+            {
+                sb.Append("\n关键词：");
+                for (var i = 0; i < result.Keywords.Count && i < 6; i++)
+                {
+                    if (i > 0) sb.Append(" / ");
+                    sb.Append(result.Keywords[i]);
+                }
+            }
+
+            if (result.Reasons != null)
+            {
+                for (var i = 0; i < result.Reasons.Count; i++)
+                {
+                    sb.Append("\n· ").Append(result.Reasons[i]);
+                }
+            }
+
+            if (result.SimilarIssues != null)
+            {
+                for (var i = 0; i < result.SimilarIssues.Count; i++)
+                {
+                    var s = result.SimilarIssues[i];
+                    sb.Append("\n相似：").Append(s.Title)
+                      .Append("（相似度 ").Append(Mathf.RoundToInt((float)s.Similarity * 100f)).Append("%")
+                      .Append("，相距 ").Append(s.Distance.ToString("0.0")).Append(" 米）");
+                    if (!string.IsNullOrEmpty(s.Advice))
+                    {
+                        sb.Append("\n　").Append(s.Advice);
+                    }
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private void ShowTriage(string message)
+        {
+            if (triageText != null)
+            {
+                triageText.text = message;
+                triageText.color = message.StartsWith("⚠")
+                    ? new Color(0.95f, 0.55f, 0.2f)
+                    : new Color(0.45f, 0.72f, 0.95f);
+            }
+        }
         /// <summary>把界面上的输入组装成一份问题草稿。</summary>
         public IssueDraft BuildDraft()
         {

@@ -39,7 +39,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
       <div className="error-boundary" role="alert">
         <h1 className="error-boundary__title">页面出错了</h1>
         <p className="error-boundary__message">{error.message || '发生了未知的错误'}</p>
-        <button type="button" className="button button--primary" onClick={() => window.location.reload()}>
+        <button type="button" className="button button--solid" onClick={() => window.location.reload()}>
           刷新页面
         </button>
       </div>

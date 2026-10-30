@@ -13,14 +13,18 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"github.com/gorilla/websocket"
 	"io"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/xuanliu805-jpg/Unity-AR/server/internal/analysis"
+	"github.com/xuanliu805-jpg/Unity-AR/server/internal/hub"
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/model"
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/store"
 )
@@ -37,12 +41,16 @@ const (
 // Server 是 HTTP 处理器。
 type Server struct {
 	store *store.Store
+	hub   *hub.Hub
 	mux   *http.ServeMux
 }
 
 // New 创建 API 服务。
-func New(s *store.Store) *Server {
-	srv := &Server{store: s, mux: http.NewServeMux()}
+func New(s *store.Store, h *hub.Hub) *Server {
+	if h == nil {
+		h = hub.New()
+	}
+	srv := &Server{store: s, hub: h, mux: http.NewServeMux()}
 	srv.routes()
 	return srv
 }
@@ -70,6 +78,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/issues/{id}/status", s.handleUpdateStatus)
 	s.mux.HandleFunc("POST /api/issues/{id}/status", s.handleUpdateStatus)
 	s.mux.HandleFunc("DELETE /api/issues/{id}", s.handleDeleteIssue)
+	s.mux.HandleFunc("POST /api/analysis/triage", s.handleTriage)
+	s.mux.HandleFunc("/ws", s.handleWebSocket)
+	s.mux.HandleFunc("/api/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/", s.handleNotFound)
 }
 
@@ -110,9 +121,10 @@ type updateStatusRequest struct {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"service": "unity-ar-inspection",
-		"issues":  s.store.Count(),
+		"status":    "ok",
+		"service":   "unity-ar-inspection",
+		"issues":    s.store.Count(),
+		"websocket": "/ws",
 	})
 }
 
@@ -189,6 +201,9 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"issue": issue})
+
+	// 广播给所有订阅者，PC 管理端不用刷新就能看到新问题。
+	s.hub.Publish(hub.EventTypeIssueCreated, issue)
 }
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +243,8 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"issue": issue})
+
+	s.hub.Publish(hub.EventTypeIssueUpdated, issue)
 }
 
 func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +259,8 @@ func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+
+	s.hub.Publish(hub.EventTypeIssueDeleted, map[string]string{"id": id})
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +291,78 @@ func isKnownPath(path string) bool {
 		rest = strings.TrimSuffix(rest, "/status")
 	}
 	return rest != "" && !strings.Contains(rest, "/")
+}
+
+// handleWebSocket 把连接升级成 WebSocket，并交给广播中心。
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{
+		// 允许任意来源：管理端可能跑在 Vite 开发服务器(5173/5174)或任意静态目录下。
+		// WebSocket 握手不受 CORS 限制，这里显式放开是为了让 CheckOrigin 不拦截。
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket 升级失败: %v", err)
+		return
+	}
+
+	s.hub.Serve(conn)
+}
+
+// triageRequest 是 AI 智能分诊的请求体。
+type triageRequest struct {
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Position    *model.Position `json:"position"`
+}
+
+// handleTriage 做「智能分诊」：给建议优先级、问题类别、以及重复报修风险。
+//
+// 这是纯本地算法（关键词 + TF-IDF 相似度 + 3D 距离 + 规则表），
+// 不依赖任何外部大模型 API —— 巡检现场常常没有网络。
+func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
+	var req triageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_argument", "请求体过大，请检查提交的内容", "")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "请求体不是合法的 JSON", "")
+		return
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "标题(title)不能为空", "title")
+		return
+	}
+
+	pos := model.Position{}
+	if req.Position != nil {
+		pos = *req.Position
+	}
+
+	history := make([]analysis.Candidate, 0, s.store.Count())
+	for _, issue := range s.store.List() {
+		history = append(history, analysis.Candidate{
+			ID:          issue.ID,
+			Title:       issue.Title,
+			Description: issue.Description,
+			Priority:    issue.Priority,
+			Status:      issue.Status,
+			Position:    issue.Position,
+			CreatedAt:   issue.CreatedAt,
+		})
+	}
+
+	result := analysis.Triage(analysis.Input{
+		Title:       title,
+		Description: strings.TrimSpace(req.Description),
+		Position:    pos,
+	}, history, time.Now())
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // ---------- 辅助函数 ----------

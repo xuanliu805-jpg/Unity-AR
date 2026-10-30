@@ -69,6 +69,32 @@ AR Foundation 6.x 对 `ARSessionState`、`ARCameraManager`（不再有公开的 
 | Android APK | ✅ **已产出**（18.1 MB，IL2CPP + arm64-v8a），并已在真机安装 |
 | 真机 AR（平面检测 / 放置 / 上报） | ⏳ 需要你本人操作手机完成最后一步（见第 7 节） |
 
+## 2.5 管理端的视觉与交互设计
+
+按 `frontend-design` skill 重做，设计主张是把它做成一本「**现场巡检台账**」，而不是又一个后台模板：
+
+- **材质**：牛皮纸/米白底 + 极淡的网格纹理，像一本真的纸质台账；
+- **排版**：标题用有性格的西文 display 字体（中文回落 PingFang SC / 微软雅黑），
+  数字与问题 ID 用等宽字体，强化「台账」的工业感；
+- **色彩**：暖白纸面 + 墨黑文字 + **一个朱红**作为唯一强调色（高优先级、处理进度条都用它），
+  其余状态用低饱和的绿/灰，避免花哨；
+- **信息层级**：顶部统计条（总数/待处理/处理中/已解决/高优先级）+ 处理进度条 →
+  筛选区 → 问题清单 → 右侧「补录问题」侧栏；
+- **动效**：进场 stagger、状态切换过渡、实时连接指示、Toast 提示——克制，不用炫技动画。
+
+![新版管理界面](docs/screenshots/11-新版管理界面.png)
+
+### 2.6 AI 智能分诊怎么用
+
+1. 管理端右侧「补录问题」面板填好标题/描述 → 点「**智能分诊**」；
+   Unity 端表单里也有同一个按钮。
+2. 返回：**建议优先级**、**问题类别**、**可信度**、**重复报修风险**、**关键词**、**理由**、**相似历史问题**。
+3. 建议**不会**自动改你填的值 —— 要采纳得点「采纳建议优先级」。
+4. 后端实现见 `server/internal/analysis/`，是**纯本地算法**（中文 2-gram 分词 + TF-IDF 余弦 +
+   3D 距离 + 巡检类别规则表），**不调用任何外部大模型 API**，离线可用、毫秒级响应、结论可解释。
+
+![AI 智能分诊](docs/screenshots/13-AI智能分诊.png)
+
 ## 3. 快速开始
 
 ### 3.1 启动 Go 后端
@@ -188,16 +214,16 @@ CORS 已放开，React 可以直接跨域访问。
 
 | 层 | 命令 | 结果 |
 | --- | --- | --- |
-| Go 后端 | `cd server && go test ./...` | **29** 个用例全部通过 |
+| Go 后端 | `cd server && go test ./...` | **57** 个用例全部通过 |
 | Go 静态检查 | `cd server && go vet ./... && gofmt -l .` | 无告警 |
-| React 单测 | `cd web && npm run test:run` | **30** 个用例全部通过 |
+| React 单测 | `cd web && npm run test:run` | **62** 个用例全部通过 |
 | React 类型 / 构建 | `npm run typecheck` / `npm run build` | 0 错误 / 构建成功 |
 | **Unity 编译** | `Unity.exe -batchmode -quit -nographics -projectPath unity` | **0 error 0 warning**，4 个程序集全部生成 |
-| **Unity Test Runner** | `Unity.exe -batchmode -runTests -testPlatform EditMode -projectPath unity` | **61** 个用例全部通过（真 Unity 内执行） |
-| Unity 纯逻辑（无 Unity 环境） | `dotnet test tools/UnityLogicTests/UnityLogicTests.csproj` | **61** 个用例全部通过（同一批源文件） |
+| **Unity Test Runner** | `Unity.exe -batchmode -runTests -testPlatform EditMode -projectPath unity` | **89** 个用例全部通过（真 Unity 内执行） |
+| Unity 纯逻辑（无 Unity 环境） | `dotnet test tools/UnityLogicTests/UnityLogicTests.csproj` | **89** 个用例全部通过（同一批源文件） |
 | Unity C# 语法检查 | `dotnet run --project tools/SyntaxCheck -- unity/Assets` | 28 个文件、0 个语法错误 |
-| 三端端到端 | `node scripts/e2e.mjs` | **25** 条断言全部通过（真实后端 + 真实浏览器） |
-| **合计** | | **145** 个自动化断言 |
+| 三端端到端 | `node scripts/e2e.mjs` | **27** 条断言全部通过（真实后端 + 真实浏览器） |
+| **合计** | | **235** 个自动化断言 |
 
 端到端脚本会自己编译并启动 Go 后端、启动 Vite、用无头 Chromium 跑完
 「上报 → 列表看到 → 改状态 → 杀掉后端不白屏 → 重启后数据仍在」，截图写到 `docs/screenshots/`。
@@ -256,12 +282,21 @@ adb install -r -g E:\简历题目\build\UnityAR-Inspect.apk
   React 在浏览器中可正常跨域访问。零第三方依赖。
 - **React 管理端**：列表显示标题/描述/优先级/状态/坐标/时间；状态可改为 `open`/`in_progress`/`resolved`；
   **后端不可用时显示错误条 + 重试按钮，不白屏**；空态、加载态、总数、手动刷新；
-  加分项：优先级/状态筛选、删除（二次确认）。
+  加分项：优先级/状态筛选、删除（二次确认）、**WebSocket 实时更新**、**AI 智能分诊面板**、
+  **全新亮色视觉设计**（详见第 2.5 节）。
 - **Unity AR 客户端**：AR Foundation 水平平面检测 → 射线命中处放置立方体标记 →
   填写标题（必填）/描述（可选）/优先级（低/中/高）→ 上报坐标 → 成功/失败明确提示；
   **点按钮/输入框不会误放标记**（三重保障）；后端地址可配置；
   标记按优先级着色；**场景一键生成**；**Android AR 设置一键配置**；**APK 一键打包**。
-- **测试**：Go 29 + React 30 + Unity 61 + 端到端 25 = **145 个自动化断言**，
+- **实时协同**：后端提供 **WebSocket**（`GET /ws`），Unity 上报 / 状态变更会**立刻**推到管理端，
+  管理端无需刷新；断线指数退避重连。
+- **AI 智能分诊**：后端纯本地算法（中文 2-gram 分词 + TF-IDF 余弦 + 3D 距离 + 规则表），给出
+  **建议优先级**、**问题类别**、**重复报修风险**与**相似历史问题**；
+  管理端与 Unity 端都有入口。**建议只是建议**，不自动改用户填的值。
+- **Unity 历史问题列表**：手机端可查看全部历史问题，并直接把某条改成 待处理/处理中/已解决，或删除。
+- **AR 标记样式随状态变化**：优先级决定色相（低绿/中黄/高红），状态决定形态
+  （待处理实心 / 处理中放大 / 已解决半透明缩小）。
+- **测试**：Go 57 + React 62 + Unity 89 + 端到端 27 = **235 个自动化断言**，
   另加 28 个 Unity 文件的 Roslyn 语法检查。
 - **代码评审后修复的缺陷**（详见 `AI_LOG.md`）：Unity 侧两个**会导致工程编译不过**的问题
   （`namespace UnityAR.Input` 遮蔽 `UnityEngine.Input`、`TMP_InputField.viewport` 在 TMP 3.0.6 中应为 `textViewport`）；
@@ -269,11 +304,16 @@ adb install -r -g E:\简历题目\build\UnityAR-Inspect.apk
   后端 500 响应泄露文件路径；前端响应体不做运行时校验可能白屏；后端进程被杀时 fetch 挂死导致页面无任何提示。
 
 ### 🎁 已实现的加分项
+- **WebSocket 实时更新**：Unity 上报 / 状态变更 / 删除实时推到管理端，断线指数退避重连，界面有连接状态指示。
+- **Unity 历史问题列表与编辑**：查看全部历史问题，直接改状态或删除。
+- **AR 标记样式随优先级与状态变化**。
+- **AI 智能分诊**：建议优先级 + 类别 + 重复报修风险 + 相似问题（纯本地算法，离线可用）。
+- **管理端亮色重设计**（见 2.5）。
 - React：优先级/状态筛选、删除（二次确认）、手动刷新、问题总数、空态/加载态、错误条 + 重试。
-- Unity：按优先级给 AR 标记着色（绿/黄/红）、真机后端地址可运行时修改并记忆（PlayerPrefs）、
-  场景一键生成、Android/iOS AR 设置一键配置、命令行一键打包。
-- 工程：零第三方依赖的 Go 后端、原子写持久化、原子数据文件、E2E 冒烟脚本、Roslyn 语法检查工具、
-  Roslyn 语法检查工具、Unity 命令行一键准备/打包脚本。
+- Unity：真机后端地址可运行时修改并记忆（PlayerPrefs）、场景一键生成、
+  Android/iOS AR 设置一键配置、命令行一键打包。
+- 工程：零第三方依赖的 Go 后端、原子写持久化、E2E 冒烟脚本、Roslyn 语法检查工具、
+  Unity 命令行一键准备/打包脚本。
 
 ### ⚠️ 未完成（如实说明）
 1. **真机 AR 的最后一步没有由 AI 实测**：AI 能编译、能打包、能装机，但**无法代替人操作手机**，

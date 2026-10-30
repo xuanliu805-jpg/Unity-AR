@@ -29,6 +29,7 @@ namespace UnityAR.EditorTools
             Debug.Log("[项目准备] 开始");
 
             ImportTmpEssentials();
+            ArProjectSettings.ConfigureAlwaysIncludedShaders();
             BuildScene();
             // 必须在 BuildScene 之后：生成场景会新建 TMP 文本，
             // 换字体要放在后面，否则新场景里的文本又用回默认拉丁字体。

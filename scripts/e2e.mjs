@@ -21,6 +21,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -163,17 +164,49 @@ async function main() {
 
   log('1/7 编译 Go 后端');
   const goBin = process.env.GO_BIN || 'go';
-  await new Promise((res, rej) => {
-    const c = spawn(goBin, ['build', '-o', join(repoRoot, 'server', 'server.exe'), './cmd/server'], {
-      cwd: join(repoRoot, 'server'),
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
+
+  // --- Go 构建环境的两个坑 ---
+  // ① Windows Defender 会把 Go 链接出来的临时 exe 误报成
+  //    「Behavior:Win32/DefenseEvasion.A!ml」而让构建失败（Go 在 Windows 上的经典误报）。
+  //    规避办法：把 Go 的临时目录指到一个已加入 Defender 排除项的目录。
+  const goTmp = process.env.GO_BUILD_TMPDIR || 'E:\\tools\\gobuild';
+  try {
+    mkdirSync(goTmp, { recursive: true });
+    process.env.GOTMPDIR = goTmp;
+  } catch { /* 目录建不出来就算了，用默认临时目录 */ }
+
+  // ② 国内直连 proxy.golang.org 会超时，用 goproxy.cn。
+  if (!process.env.GOPROXY) {
+    process.env.GOPROXY = 'https://goproxy.cn,https://proxy.golang.org,direct';
+  }
+
+  // 构建到临时目录：直接构建到 server/server.exe 可能被上一轮的进程占着而失败。
+  const exePath = join(tmpdir(), `unity-ar-e2e-${process.pid}.exe`);
+
+  let built = false;
+  for (let attempt = 1; attempt <= 4 && !built; attempt++) {
+    await new Promise((res) => {
+      const c = spawn(goBin, ['build', '-o', exePath, './cmd/server'], {
+        cwd: join(repoRoot, 'server'),
+        stdio: attempt === 1 ? 'inherit' : 'ignore',
+        shell: process.platform === 'win32',
+      });
+      c.on('exit', (code) => {
+        if (code === 0) built = true;
+        res();
+      });
     });
-    c.on('exit', (code) => (code === 0 ? res() : rej(new Error(`go build 失败: ${code}`))));
-  });
+    if (!built) {
+      console.log(`[e2e] go build 第 ${attempt} 次失败（可能是 Defender 误报），重试…`);
+      await sleep(3000);
+    }
+  }
+  if (!built) {
+    throw new Error('go build 失败');
+  }
 
   log('2/7 启动 Go 后端');
-  let backend = startProcess('go', join(repoRoot, 'server', 'server.exe'), [
+  let backend = startProcess('go', exePath, [
     '-addr', `:${API_PORT}`,
     '-data', DATA_FILE,
   ]);
@@ -312,7 +345,7 @@ async function main() {
 
   // 重启后端 → 数据仍在
   log('   重启后端，验证数据持久化');
-  backend = startProcess('go', join(repoRoot, 'server', 'server.exe'), [
+  backend = startProcess('go', exePath, [
     '-addr', `:${API_PORT}`,
     '-data', DATA_FILE,
   ]);

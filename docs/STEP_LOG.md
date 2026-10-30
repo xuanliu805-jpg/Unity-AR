@@ -757,3 +757,135 @@ Canvas 的 GraphicRaycaster          : 有
 - 新增 `unity/Assets/Editor/EventSystemDiagnostics.cs`：输入系统与 EventSystem 配置的诊断工具；
 - `unity/Assets/Scenes/ARInspect.unity`、`unity/Assets/XR/**`、`unity/Assets/TextMesh Pro/**` 已纳入版本库；
 - `unity/ProjectSettings/` 现在是 Unity 真实生成的完整配置（`activeInputHandler: 2`）。
+
+---
+
+## Step 7 — WebSocket 实时推送、AI 智能分诊、前端重设计、Unity 历史面板
+
+**目标**：把上一轮评审提的加分项做掉，并把「手机上放不了标记」这个核心问题修好。
+
+### 7.1 AI 智能分诊（后端，纯本地算法）
+
+**业务价值定位**：巡检现场最大的浪费是**同一处隐患被反复上报**，
+其次是经验不足的巡检员定级不准。所以这个 AI 功能不是「接个聊天机器人」，
+而是解决两个具体的业务问题：
+
+1. **重复报修识别** —— 新问题与历史问题在语义和空间上都接近时，提示「这可能重复报修了」；
+2. **优先级建议** —— 结合关键词规则和历史同类问题的定级分布，给一个建议值。
+
+**为什么不用大模型 API**：
+- 巡检现场经常没有网络，模型不可用就等于功能不可用；
+- 重复报修判断本质是**检索**问题（与历史库比对），不是生成问题；
+- 纯算法可单元测试、毫秒级响应、结论可解释（能给出理由）。
+
+**实现**（`server/internal/analysis/`）：
+- 中文用 **2-gram** 分词（中文没有空格分词，bigram 对「渗水/水渍/配电」这类术语足够准），
+  英文数字按非字母数字切分并过滤停用词；
+- 相似度 = `0.65 × TF-IDF 余弦 + 0.35 × Jaccard`；
+- 重复判定：相似度 ≥ 0.55 **且** 3D 距离 ≤ 5 米 → `high`；
+- 优先级建议 = 关键词规则命中项 与 历史相似问题分布 取更严重的一档；
+- 类别识别：消防/电气/结构/渗漏/破损/设备/卫生 七类规则表。
+
+**13 个单元测试**（先写测试再实现）。红灯时暴露了一个真 bug：
+**规则的严重度权重（3~10）与优先级的序数（1~3）混用了同一把尺子**，
+导致「消防（权重 10）」永远压过「high（序数 3）」，历史分布永远影响不了结果。
+修正为统一到序数再比较。
+
+**新接口**：`POST /api/analysis/triage`（8 个接口测试）。
+
+### 7.2 WebSocket 实时推送
+
+**问题**：Unity 在手机上上报问题后，PC 管理端只能手动刷新才看得到，谈不上实时协同。
+
+**实现**：
+- `server/internal/hub`：广播中心，每连接一个写协程，读写分离，发送队列带缓冲；
+- `GET /ws`（别名 `/api/ws`）：连接即发 `hello`，之后推 `issue.created` / `issue.updated` / `issue.deleted`；
+- 服务端 25 秒心跳一次，客户端可发 `ping` 换 `pong`；
+- 前端 `web/src/api/realtime.ts`：断线**指数退避**重连（1s→2s→4s→8s，上限 15s），
+  收到事件**就地更新本地列表**（不整表重拉，避免列表闪烁），并有「实时已连接 / 重连中」状态指示。
+- 前端 14 个 WebSocket 单测（用 mock 的 WebSocket 类测连接、事件分发、断线重连、退避序列）。
+
+**实测（真实 Go 后端 + 真实浏览器）**：
+```
+从手机侧上报 → 页面不刷新，列表里立刻出现新问题
+远端改状态    → 页面上该行的下拉框同步变成 resolved
+```
+
+**抓到一个真 bug**：日志中间件用 `statusRecorder` 包装了 `ResponseWriter`，
+而它**没有实现 `http.Hijacker`**，WebSocket 握手直接 500
+（`websocket: response does not implement http.Hijacker`）。
+单元测试没覆盖到，因为测试直接用 `api.Server` 当 handler，**没套中间件**；
+只有真正把进程跑起来才会暴露。
+→ 把中间件挪进 `internal/api` 并让 `statusRecorder` 实现 `Hijack()`，同时补了一条
+「套了中间件的真实 HTTP 服务也能完成 WS 握手」的回归测试。
+
+### 7.3 前端重设计（按 `frontend-design` skill）
+
+原版是深色 + 表格，用户反馈「有点丑、偏明亮风格一点」。按 skill 的方法论重做：
+- **设计主张**：把管理端做成「**现场巡检台账**」——牛皮纸/米白底 + 网格纹理 + 编辑式排版，
+  数字用等宽字体的表格化排布，像一本真的巡检台账而不是一个后台模板；
+- **字体**：标题用有性格的西文 display 字体（中文回落 PingFang SC / 微软雅黑），
+  数字与 ID 用等宽字体，强化「台账」的工业感；
+- **色彩**：暖白纸面 + 墨黑文字 + 一个朱红作为唯一强调色（高优先级、进行中进度条都用它）；
+- **交互**：进场 stagger、状态切换过渡、实时连接指示、Toast 提示。
+
+实测：1450×1000 视口下无控制台报错，「实时已连接」指示正常。
+
+同时修了一个布局问题：**描述列被挤成竖排**（表格列宽被标题/坐标列抢走），
+调整了 `min-width` 与描述列的最小宽度。
+
+### 7.4 Unity 端：历史问题列表 + 编辑、AI 分诊入口、标记样式
+
+| 能力 | 实现 |
+| --- | --- |
+| **历史问题列表与编辑** | `IssueHistoryPanel`：运行时自建 UI 的全屏面板，列出全部历史问题（标题/优先级/状态/时间/坐标），每条可直接改成 待处理/处理中/已解决，或删除 |
+| **AI 分诊入口** | 表单里加「智能分诊」按钮，调用后端分诊接口，展示建议优先级/类别/可信度/重复风险/关键词/理由/相似问题；**建议只是建议**，要另点「采纳建议优先级」才改表单 |
+| **标记样式按优先级+状态** | 优先级决定色相（低绿/中黄/高红），状态决定形态（待处理实心 / 处理中放大 1.25× / 已解决半透明 0.35 且缩小 0.75×） |
+
+**Unity 侧新增纯逻辑（都可单测）**：
+- `Core/Json.cs` —— 极简 JSON 解析器（`JsonUtility` 不支持顶层数组、字段缺失会抛异常）；
+- `Core/IssueSummary.cs` —— 历史列表与分诊结果的解析；
+- `Core/RayPlaneIntersection.cs` —— 射线 × 平面求交。
+
+### 7.5 修「手机上放不了标记」
+
+**定位过程**（这次没有靠猜）：
+1. 真机上确实放不出标记；
+2. 加运行时日志，打印每次点击的坐标、`EventSystem` 是否存在、UI 命中数、判定结果；
+3. 日志显示 `uiHits=0` —— 说明**点击没有被识别成 UI 点击**，于是走到了「放置标记」分支；
+4. 但同时发现 `finger=1..6` 全是真实手指 id，**`adb input tap` 注入的 legacy 事件根本进不了 App**
+   （切到新输入系统后 adb 注入走的是 legacy 通道）。
+   → 「按钮点了没反应」其实是我用 adb 驱动的**误判**，按钮本身是好的。
+
+**两个真实缺陷**：
+1. **`EventSystem.RaycastAll` 在有嵌套 Canvas 时拿不到画布上的 GraphicRaycaster**，`uiHits` 恒为 0
+   → 「点按钮不误放标记」这条要求实际上**没被满足**（点按钮会同时尝试放置标记）。
+   → 改为**直接问画布上的 GraphicRaycaster**，并把它序列化进 `PlacementController`。
+2. **`IssueHistoryPanel` 自建嵌套 Canvas**（带 CanvasScaler + 自己的 GraphicRaycaster），
+   既干扰画布缩放，又让上面那个全局 raycaster 列表更不可靠。
+   → 改为挂在**已有 UI 画布**下（不新建 Canvas），并 `SetAsLastSibling()` 保证画在最上层。
+
+**另外一个真机上才暴露的坑**：标记渲染成 **品红色 (255,0,255)**（Unity 的「shader 缺失」色）。
+根因：标记是 `GameObject.CreatePrimitive` 运行时创建的，用的内置 Default-Material，
+它引用的 **Standard shader 默认不在「始终包含的着色器」里**，而新建工程没有任何材质引用它
+→ 打包时被剔除 → 真机上没 shader 可用。
+→ 新增 `ArProjectSettings.ConfigureAlwaysIncludedShaders()` 把 Standard 加进去，
+同时 `PlacementController` 给标记显式建一份 Standard 材质（双保险）。
+
+**放置逻辑本身的加固**：原来只依赖 `ARRaycastManager.Raycast`，
+而 AR Foundation 的 `TrackableType.Planes` 里含 ARCore 原生层**不支持**的
+`PlaneWithinInfinity` 标志位，掩码是直接透传给原生层的，部分机型会返回空结果
+—— 这正是「明明检测到地面平面却怎么点都放不下」的原因。
+→ 改成两条路径：① 只请求 ARCore 明确支持的 `PlaneWithinPolygon`；
+② 失败则用**已检测到的水平平面自己求交**（`Core/RayPlaneIntersection`，10 个单元测试覆盖）。
+
+### 7.6 本步的测试与验证
+
+| 层 | 用例数 | 结果 |
+| --- | --- | --- |
+| Go 后端 | 55（新增 analysis 13 + hub 5 + 接口 8） | ✅ |
+| React | 62（新增 realtime 14 + triage 4 + 分诊面板 10 + 实时 App 4） | ✅ |
+| Unity 纯逻辑（dotnet） | 89 | ✅ |
+| **Unity Test Runner（真 Unity）** | **89** | ✅ |
+| 三端端到端 | 25 | ✅ |
+| **合计** | **231** | ✅ |

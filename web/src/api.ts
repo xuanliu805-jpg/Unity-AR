@@ -15,12 +15,22 @@
 import type {
   ApiErrorBody,
   ApiErrorCode,
+  CreateIssueRequest,
+  CreateIssueResponse,
   DeleteIssueResponse,
+  DuplicateRisk,
   Issue,
+  IssueCategory,
+  IssuePriority,
   IssueStatus,
   IssuesResponse,
+  SimilarIssue,
+  TriageRequest,
+  TriageResponse,
   UpdateStatusResponse,
 } from './types';
+
+import { STATUS_OPTIONS } from './types';
 
 export const DEFAULT_API_BASE_URL = 'http://localhost:8080';
 
@@ -250,6 +260,133 @@ export async function deleteIssue(id: string): Promise<string> {
   return data.deleted;
 }
 
+/** POST /api/issues —— 上报一个新问题（管理端也允许手动补录）。 */
+export async function createIssue(payload: CreateIssueRequest): Promise<Issue> {
+  const data = await request<Partial<CreateIssueResponse>>(
+    apiUrl('/api/issues'),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: payload.title,
+        description: payload.description,
+        priority: payload.priority,
+        position: {
+          x: payload.position.x,
+          y: payload.position.y,
+          z: payload.position.z,
+        },
+      }),
+    },
+  );
+
+  const issue = data.issue;
+  if (!issue || typeof issue.id !== 'string' || typeof issue.title !== 'string') {
+    throw new ApiError('后端返回的响应缺少 issue 字段', 'internal_error', 200);
+  }
+  return issue;
+}
+
+/* ---------- AI 智能分诊 ---------- */
+
+const PRIORITY_VALUES: ReadonlyArray<IssuePriority> = ['high', 'medium', 'low'];
+const CATEGORY_VALUES: ReadonlyArray<IssueCategory> = [
+  '渗漏',
+  '破损',
+  '电气',
+  '消防',
+  '结构',
+  '设备',
+  '其他',
+];
+const RISK_VALUES: ReadonlyArray<DuplicateRisk> = ['none', 'low', 'high'];
+
+function clamp01(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return Math.min(1, Math.max(0, n));
+}
+
+/**
+ * POST /api/analysis/triage —— 本地算法分诊（不调用任何外部大模型）。
+ *
+ * 返回值一律做运行时归一化：后端字段缺失/类型不对时退回到安全默认值，
+ * 绝不让 undefined 流进渲染层把页面搞崩。
+ */
+export async function triageIssue(payload: TriageRequest): Promise<TriageResponse> {
+  const data = await request<Partial<TriageResponse>>(
+    apiUrl('/api/analysis/triage'),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: payload.title,
+        description: payload.description,
+        position: {
+          x: payload.position.x,
+          y: payload.position.y,
+          z: payload.position.z,
+        },
+      }),
+    },
+  );
+
+  if (!data || typeof data !== 'object') {
+    throw new ApiError('分诊服务返回了无法解析的响应', 'internal_error', 200);
+  }
+
+  const suggestedPriority = PRIORITY_VALUES.includes(
+    data.suggestedPriority as IssuePriority,
+  )
+    ? (data.suggestedPriority as IssuePriority)
+    : 'medium';
+
+  const suggestedCategory = CATEGORY_VALUES.includes(
+    data.suggestedCategory as IssueCategory,
+  )
+    ? (data.suggestedCategory as IssueCategory)
+    : '其他';
+
+  const duplicateRisk = RISK_VALUES.includes(data.duplicateRisk as DuplicateRisk)
+    ? (data.duplicateRisk as DuplicateRisk)
+    : 'none';
+
+  const keywords = Array.isArray(data.keywords)
+    ? data.keywords.filter((item): item is string => typeof item === 'string')
+    : [];
+
+  const reasons = Array.isArray(data.reasons)
+    ? data.reasons.filter((item): item is string => typeof item === 'string')
+    : [];
+
+  const similarIssues = Array.isArray(data.similarIssues)
+    ? data.similarIssues
+        .filter(
+          (item): item is SimilarIssue =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as SimilarIssue).id === 'string',
+        )
+        .map((item) => ({
+          id: item.id,
+          title: typeof item.title === 'string' ? item.title : item.id,
+          similarity: clamp01(item.similarity),
+          distance: typeof item.distance === 'number' ? item.distance : 0,
+          ageDays: typeof item.ageDays === 'number' ? item.ageDays : 0,
+          status: STATUS_OPTIONS.includes(item.status) ? item.status : 'open',
+          advice: typeof item.advice === 'string' ? item.advice : '',
+        }))
+    : [];
+
+  return {
+    suggestedPriority,
+    suggestedCategory,
+    confidence: clamp01(data.confidence),
+    duplicateRisk,
+    keywords,
+    reasons,
+    similarIssues,
+  };
+}
 /** 把任意异常转成给用户看的中文提示。 */
 export function toUserMessage(error: unknown): string {
   if (error instanceof ApiError || error instanceof NetworkError || error instanceof CancelledError) {

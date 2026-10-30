@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xuanliu805-jpg/Unity-AR/server/internal/hub"
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/store"
 )
 
@@ -20,7 +21,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	return New(s)
+	return New(s, hub.New())
 }
 
 func do(t *testing.T, srv *Server, method, path string, body string) *httptest.ResponseRecorder {
@@ -340,7 +341,7 @@ func TestInternalErrorDoesNotLeakServerPaths(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	srv := New(st)
+	srv := New(st, hub.New())
 	w := do(t, srv, http.MethodPost, "/api/issues", `{"title":"t","priority":"low"}`)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d (%s), want 500", w.Code, w.Body.String())

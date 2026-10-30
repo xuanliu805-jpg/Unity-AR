@@ -43,7 +43,6 @@ namespace UnityAR.EditorTools
             AssetDatabase.SaveAssets();
             Debug.Log("[AR 巡检] 已配置 Android：minSdk 24 / ARM64 / 包名 com.example.unityar.inspect");
             Debug.Log("[AR 巡检] 请手动完成：Project Settings → XR Plug-in Management → ARCore → Requirement = Required");
-            Debug.Log("[AR 巡检] 真机访问 http 明文地址时，还需在 AndroidManifest 中允许 cleartext 流量（或把后端部署为 https）。");
         }
 
         [MenuItem("Tools/AR 巡检/配置 iOS AR 设置", false, 21)]
@@ -56,6 +55,57 @@ namespace UnityAR.EditorTools
             AssetDatabase.SaveAssets();
             Debug.Log("[AR 巡检] 已配置 iOS：包名 com.example.unityar.inspect / 最低 iOS 13.0");
             Debug.Log("[AR 巡检] 请手动完成：Project Settings → XR Plug-in Management → ARKit → Enable，并填写 Camera Usage Description");
+        }
+
+        /// <summary>
+        /// 把标记要用的 Standard shader 加进「始终包含的着色器」。
+        ///
+        /// 背景：标记是用 <c>GameObject.CreatePrimitive</c> 运行时创建的，
+        /// 用的是内置的 Default-Material，它引用 Standard shader。
+        /// 而 Standard 默认**不在** Always Included Shaders 里，
+        /// 新建工程又没有任何材质引用它 —— 于是打包时它被剔除，
+        /// 真机上标记会渲染成 Unity 的「shader 缺失」品红色（255,0,255）。
+        /// 这个坑只有在真机上才看得见。
+        /// </summary>
+        public static void ConfigureAlwaysIncludedShaders()
+        {
+            var graphicsSettings = AssetDatabase.LoadAssetAtPath<Object>("ProjectSettings/GraphicsSettings.asset");
+            if (graphicsSettings == null)
+            {
+                Debug.LogWarning("[AR 巡检] 读不到 GraphicsSettings.asset，跳过着色器配置");
+                return;
+            }
+
+            var standard = Shader.Find("Standard");
+            if (standard == null)
+            {
+                Debug.LogWarning("[AR 巡检] 找不到 Standard shader");
+                return;
+            }
+
+            var so = new SerializedObject(graphicsSettings);
+            var array = so.FindProperty("m_AlwaysIncludedShaders");
+            if (array == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < array.arraySize; i++)
+            {
+                var element = array.GetArrayElementAtIndex(i).objectReferenceValue as Shader;
+                if (element != null && element.name == standard.name)
+                {
+                    Debug.Log("[AR 巡检] Standard shader 已在始终包含列表中");
+                    return;
+                }
+            }
+
+            array.InsertArrayElementAtIndex(0);
+            array.GetArrayElementAtIndex(0).objectReferenceValue = standard;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(graphicsSettings);
+            AssetDatabase.SaveAssets();
+            Debug.Log("[AR 巡检] 已把 Standard shader 加入始终包含的着色器（否则真机上的标记会是品红色）");
         }
     }
 }

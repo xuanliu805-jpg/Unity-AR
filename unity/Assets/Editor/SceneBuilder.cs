@@ -82,7 +82,7 @@ namespace UnityAR.EditorTools
 
             // 填写面板
             var formPanel = CreatePanel("FormPanel", canvasGo.transform, new Color(0.10f, 0.10f, 0.12f, 0.92f));
-            SetAnchors(formPanel, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 0f), new Vector2(0f, 760f));
+            SetAnchors(formPanel, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 0f), new Vector2(0f, 1000f));
 
             var titleLabel = CreateText("TitleLabel", formPanel, "问题标题（必填）", 28, TextAlignmentOptions.Left);
             SetAnchors(titleLabel.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -60f), new Vector2(-30f, -16f));
@@ -113,16 +113,40 @@ namespace UnityAR.EditorTools
             var positionText = CreateText("PositionText", formPanel, "尚未放置标记", 24, TextAlignmentOptions.Left);
             SetAnchors(positionText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -436f), new Vector2(-30f, -398f));
 
+            // --- AI 智能分诊区 ---
+            var triageButton = CreateButton("TriageButton", formPanel, "智能分诊");
+            SetAnchors(triageButton.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0.5f, 1f),
+                new Vector2(30f, -500f), new Vector2(-8f, -440f));
+
+            var triageAdoptButton = CreateButton("TriageAdoptButton", formPanel, "采纳建议优先级");
+            SetAnchors(triageAdoptButton.GetComponent<RectTransform>(), new Vector2(0.5f, 1f), new Vector2(1f, 1f),
+                new Vector2(8f, -500f), new Vector2(-30f, -440f));
+            triageAdoptButton.gameObject.SetActive(false);
+
+            var triageText = CreateText("TriageText", formPanel, "", 22, TextAlignmentOptions.TopLeft);
+            SetAnchors(triageText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f),
+                new Vector2(30f, -660f), new Vector2(-30f, -506f));
             var submitButton = CreateButton("SubmitButton", formPanel, "提交问题");
-            SetAnchors(submitButton.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -510f), new Vector2(-30f, -444f));
+            SetAnchors(submitButton.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -760f), new Vector2(-30f, -668f));
 
             var feedbackText = CreateText("FeedbackText", formPanel, "", 26, TextAlignmentOptions.Left);
-            SetAnchors(feedbackText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -556f), new Vector2(-30f, -518f));
+            SetAnchors(feedbackText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -806f), new Vector2(-30f, -768f));
 
             // 打开/关闭面板的按钮
             var toggleButton = CreateButton("ToggleFormButton", canvasGo.transform, "填写问题");
             SetAnchors(toggleButton.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-160f, 40f), new Vector2(160f, 130f));
 
+            // --- 历史问题入口 ---
+            var historyButton = CreateButton("HistoryButton", canvasGo.transform, "历史问题");
+            var historyRect = historyButton.GetComponent<RectTransform>();
+            historyRect.anchorMin = new Vector2(1f, 1f);
+            historyRect.anchorMax = new Vector2(1f, 1f);
+            historyRect.pivot = new Vector2(1f, 1f);
+            historyRect.sizeDelta = new Vector2(210f, 66f);
+            historyRect.anchoredPosition = new Vector2(-18f, -18f);
+
+            var historyPanel = canvasGo.AddComponent<IssueHistoryPanel>();
+            historyButton.onClick.AddListener(historyPanel.Toggle);
             var formController = canvasGo.AddComponent<IssueFormController>();
             var statusBanner = canvasGo.AddComponent<StatusBanner>();
             var placement = placementGo.GetComponent<PlacementController>();
@@ -135,6 +159,7 @@ namespace UnityAR.EditorTools
             Assign(placement, "raycastManager", sessionGo.GetComponent<UnityEngine.XR.ARFoundation.ARRaycastManager>());
             Assign(placement, "markerRoot", markersGo.transform);
             Assign(placement, "uiBlocker", formPanel);
+            Assign(placement, "uiRaycaster", canvasGo.GetComponent<UnityEngine.UI.GraphicRaycaster>());
 
             Assign(arSession, "session", sessionGo.GetComponent<UnityEngine.XR.ARFoundation.ARSession>());
             Assign(arSession, "planeManager", sessionGo.GetComponent<UnityEngine.XR.ARFoundation.ARPlaneManager>());
@@ -153,6 +178,11 @@ namespace UnityAR.EditorTools
             Assign(formController, "toggleButton", toggleButton);
             Assign(formController, "feedbackText", feedbackText);
             Assign(formController, "positionText", positionText);
+            Assign(formController, "triageButton", triageButton);
+            Assign(formController, "triageAdoptButton", triageAdoptButton);
+            Assign(formController, "triageText", triageText);
+            Assign(historyPanel, "apiClient", apiClient);
+            Assign(historyPanel, "backendSettings", backend);
 
             Assign(statusBanner, "arSession", arSession);
             Assign(statusBanner, "placement", placement);

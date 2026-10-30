@@ -4,7 +4,12 @@ using UnityAR.Core;
 namespace UnityAR.Ar
 {
     /// <summary>
-    /// 标记外观控制：按优先级给标记上色，让管理人员一眼就能从画面里分辨问题严重程度。
+    /// 标记外观控制。
+    ///
+    /// 两层视觉编码：
+    ///   - **优先级决定色相**：低=绿 / 中=黄 / 高=红，管理人员一眼能看出严重程度；
+    ///   - **状态决定形态**：待处理=实心正常大小 / 处理中=高亮放大 / 已解决=半透明缩小，
+    ///     这样从画面里也能一眼看出哪些已经处理完了。
     /// </summary>
     public static class MarkerStyler
     {
@@ -27,12 +32,46 @@ namespace UnityAR.Ar
         }
 
         /// <summary>
-        /// 把颜色应用到标记上。
+        /// 根据状态取「缩放系数」。
+        /// 处理中的问题更显眼，已解决的缩小淡出 —— 一眼能区分「还在盯的」和「已经搞定的」。
+        /// </summary>
+        public static float ScaleFor(string status)
+        {
+            switch (status)
+            {
+                case IssueStatuses.Resolved:
+                    return 0.75f;
+                case IssueStatuses.InProgress:
+                    return 1.25f;
+                default:
+                    return 1f;
+            }
+        }
+
+        /// <summary>
+        /// 根据状态取「不透明度」。
+        /// 已解决的淡出到 35%，避免它继续抢占画面注意力。
+        /// </summary>
+        public static float AlphaFor(string status)
+        {
+            switch (status)
+            {
+                case IssueStatuses.Resolved:
+                    return 0.35f;
+                case IssueStatuses.InProgress:
+                    return 1f;
+                default:
+                    return 0.9f;
+            }
+        }
+
+        /// <summary>
+        /// 把颜色与透明度应用到标记上。
         ///
         /// 用 MaterialPropertyBlock 而不是 <c>renderer.material</c>：
         /// 后者每访问一次都会给渲染器实例化一份材质，标记一多就是材质泄漏 + DrawCall 增加。
         /// </summary>
-        public static void Apply(GameObject marker, string priority)
+        public static void Apply(GameObject marker, string priority, string status)
         {
             if (marker == null)
             {
@@ -46,12 +85,27 @@ namespace UnityAR.Ar
             }
 
             var color = ColorFor(priority);
+            color.a = AlphaFor(status);
+
             var block = new MaterialPropertyBlock();
             renderer.GetPropertyBlock(block);
             // URP 用 _BaseColor，内置管线用 _Color，两个都设一遍最保险。
             block.SetColor("_BaseColor", color);
             block.SetColor("_Color", color);
             renderer.SetPropertyBlock(block);
+        }
+
+        /// <summary>
+        /// 按状态调整标记大小。
+        /// </summary>
+        public static void ApplyScale(GameObject marker, Vector3 baseScale, string status)
+        {
+            if (marker == null)
+            {
+                return;
+            }
+
+            marker.transform.localScale = baseScale * ScaleFor(status);
         }
     }
 }

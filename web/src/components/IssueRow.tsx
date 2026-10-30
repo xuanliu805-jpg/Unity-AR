@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Issue, IssueStatus } from '../types';
-import { STATUS_LABELS, STATUS_OPTIONS } from '../types';
+import { PRIORITY_LABELS, STATUS_LABELS, STATUS_OPTIONS } from '../types';
 
 export interface IssueRowProps {
   issue: Issue;
@@ -10,6 +10,12 @@ export interface IssueRowProps {
   formatTime: (iso: string) => string;
   /** 删除请求进行中：禁用删除按钮，避免重复提交。 */
   deleting?: boolean;
+  /** 刚刚由 WebSocket 推送到的新记录：短暂高亮提示。 */
+  fresh?: boolean;
+  /** 被「定位」到的记录：短暂描边高亮。 */
+  located?: boolean;
+  /** 行序号：用于进场 stagger 动画的延迟。 */
+  index?: number;
 }
 
 export default function IssueRow({
@@ -18,6 +24,9 @@ export default function IssueRow({
   onDelete,
   formatTime,
   deleting = false,
+  fresh = false,
+  located = false,
+  index = 0,
 }: IssueRowProps) {
   const [status, setStatus] = useState<IssueStatus>(issue.status);
   const [busy, setBusy] = useState(false);
@@ -52,41 +61,61 @@ export default function IssueRow({
 
   const { x, y, z } = issue.position;
 
+  const className = [
+    'issue-row',
+    fresh ? 'issue-row--fresh' : '',
+    located ? 'issue-row--located' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <tr className="issue-row" data-status={issue.status}>
+    <tr
+      className={className}
+      data-status={issue.status}
+      data-priority={issue.priority}
+      id={`issue-row-${issue.id}`}
+      style={{ '--i': index } as CSSProperties}
+    >
       <td className="cell cell--title">
         <div className="issue-title">{issue.title}</div>
         <div className="issue-id">{issue.id}</div>
       </td>
       <td className="cell cell--description">{issue.description || '—'}</td>
       <td className="cell">
-        <span className={`priority priority--${issue.priority}`}>
-          {issue.priority === 'high' ? '高' : issue.priority === 'medium' ? '中' : '低'}
+        <span className={`tape tape--${issue.priority}`}>
+          <span className="tape__mark" aria-hidden="true" />
+          {PRIORITY_LABELS[issue.priority]}
         </span>
       </td>
       <td className="cell">
-        <select
-          className={`status-select status-select--${status}`}
-          aria-label={`${issue.title} 的处理状态`}
-          value={status}
-          disabled={busy}
-          onChange={(event) => {
-            void handleChange(event.target.value as IssueStatus);
-          }}
-        >
-          {STATUS_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {STATUS_LABELS[option]}
-            </option>
-          ))}
-        </select>
+        <span className="status-cell">
+          <span className={`status-dot status-dot--${status}`} aria-hidden="true" />
+          <select
+            className={`status-select status-select--${status}`}
+            aria-label={`${issue.title} 的处理状态`}
+            value={status}
+            disabled={busy}
+            onChange={(event) => {
+              void handleChange(event.target.value as IssueStatus);
+            }}
+          >
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {STATUS_LABELS[option]}
+              </option>
+            ))}
+          </select>
+        </span>
       </td>
       <td className="cell cell--position">
-        <span className="position">
+        <span className="coords">
           x {x.toFixed(2)} · y {y.toFixed(2)} · z {z.toFixed(2)}
         </span>
       </td>
-      <td className="cell cell--time">{formatTime(issue.createdAt)}</td>
+      <td className="cell cell--time">
+        <span className="stamp">{formatTime(issue.createdAt)}</span>
+      </td>
       <td className="cell cell--actions">
         <button
           type="button"

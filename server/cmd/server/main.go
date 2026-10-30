@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/api"
+	"github.com/xuanliu805-jpg/Unity-AR/server/internal/hub"
 	"github.com/xuanliu805-jpg/Unity-AR/server/internal/store"
 )
 
@@ -34,7 +35,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logging(api.New(st)),
+		Handler:           api.LoggingMiddleware(api.New(st, hub.New())),
 		ReadHeaderTimeout: 10 * time.Second,
 		// 慢速客户端不能长期占用连接
 		WriteTimeout: 30 * time.Second,
@@ -59,23 +60,4 @@ func main() {
 		log.Printf("关闭超时: %v", err)
 	}
 	log.Println("已退出")
-}
-
-// logging 打印每条请求的方法、路径与状态码，方便排查 Unity / React 的联调问题。
-func logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		log.Printf("%s %s -> %d", r.Method, r.URL.Path, rec.status)
-	})
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
 }

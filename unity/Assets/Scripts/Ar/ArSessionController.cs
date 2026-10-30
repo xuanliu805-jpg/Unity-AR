@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
@@ -127,6 +128,40 @@ namespace UnityAR.Ar
             if (HorizontalPlaneCountChanged != null)
             {
                 HorizontalPlaneCountChanged(count);
+            }
+        }
+
+        /// <summary>
+        /// 当前所有可用的水平平面。
+        ///
+        /// 巡检场景只需要「点地面」，水平面是唯一需要的可放置面。
+        /// 放置逻辑在 ARCore 的原生 raycast 拿不到结果时，会退回到用这些平面自己求交。
+        /// </summary>
+        public List<ARPlane> HorizontalPlanes
+        {
+            get
+            {
+                var result = new List<ARPlane>();
+                if (planeManager == null)
+                {
+                    return result;
+                }
+
+                foreach (var plane in planeManager.trackables)
+                {
+                    if (plane == null)
+                    {
+                        continue;
+                    }
+
+                    if (plane.alignment == PlaneAlignment.HorizontalUp
+                        || plane.alignment == PlaneAlignment.HorizontalDown)
+                    {
+                        result.Add(plane);
+                    }
+                }
+
+                return result;
             }
         }
 

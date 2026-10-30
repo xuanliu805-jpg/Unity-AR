@@ -1,5 +1,7 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -108,6 +110,114 @@ namespace UnityAR.UI
                     onComplete(result);
                 }
             }
+        }
+
+        /// <summary>
+        /// 拉取历史问题列表（用于 Unity 端的历史面板）。
+        /// </summary>
+        public IEnumerator GetIssues(Action<List<IssueSummary>> onComplete)
+        {
+            var url = BackendConfig.BuildUrl(backendSettings.BaseUrl, ApiEndpoints.Issues);
+
+            using (var request = UnityWebRequest.Get(url))
+            {
+                request.timeout = 15;
+                yield return request.SendWebRequest();
+
+                var result = Interpret(request);
+                if (!result.Success)
+                {
+                    if (onComplete != null) onComplete(null);
+                    yield break;
+                }
+
+                var issues = IssueSummary.ParseList(result.Body);
+                if (onComplete != null) onComplete(issues);
+            }
+        }
+
+        /// <summary>修改问题状态。</summary>
+        public IEnumerator UpdateStatus(string issueId, string status, Action<ApiResult> onComplete)
+        {
+            var url = BackendConfig.BuildUrl(backendSettings.BaseUrl, ApiEndpoints.IssueStatus(issueId));
+            var payload = "{\"status\":\"" + status + "\"}";
+
+            // UnityWebRequest 没有 kHttpVerbPATCH 常量，用字面量。
+            using (var request = new UnityWebRequest(url, "PATCH"))
+            {
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload));
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.timeout = 15;
+
+                yield return request.SendWebRequest();
+
+                var result = Interpret(request);
+                if (result.Success)
+                {
+                    result.Message = "状态已更新";
+                }
+                if (onComplete != null) onComplete(result);
+            }
+        }
+
+        /// <summary>删除问题。</summary>
+        public IEnumerator DeleteIssue(string issueId, Action<ApiResult> onComplete)
+        {
+            var url = BackendConfig.BuildUrl(backendSettings.BaseUrl, ApiEndpoints.Issue(issueId));
+
+            using (var request = UnityWebRequest.Delete(url))
+            {
+                request.timeout = 15;
+                yield return request.SendWebRequest();
+
+                var result = Interpret(request);
+                if (result.Success)
+                {
+                    result.Message = "问题已删除";
+                }
+                if (onComplete != null) onComplete(result);
+            }
+        }
+
+        /// <summary>
+        /// 调用后端的「智能分诊」接口，拿到建议优先级、类别与重复报修风险。
+        /// </summary>
+        public IEnumerator Triage(string title, string description, Vector3Position position,
+            Action<TriageResult> onComplete)
+        {
+            var url = BackendConfig.BuildUrl(backendSettings.BaseUrl, "/api/analysis/triage");
+            var payload = "{\"title\":\"" + JsonEscape(title) + "\",\"description\":\"" +
+                          JsonEscape(description) + "\",\"position\":{\"x\":" +
+                          position.X.ToString(CultureInfo.InvariantCulture) +
+                          ",\"y\":" + position.Y.ToString(CultureInfo.InvariantCulture) +
+                          ",\"z\":" + position.Z.ToString(CultureInfo.InvariantCulture) + "}}";
+
+            using (var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+            {
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload));
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.timeout = 20;
+
+                yield return request.SendWebRequest();
+
+                var result = Interpret(request);
+                if (!result.Success)
+                {
+                    if (onComplete != null) onComplete(null);
+                    yield break;
+                }
+
+                if (onComplete != null) onComplete(TriageResult.Parse(result.Body));
+            }
+        }
+
+        private static string JsonEscape(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                    .Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
         }
 
         /// <summary>把 UnityWebRequest 的结果翻译成统一结构。</summary>
